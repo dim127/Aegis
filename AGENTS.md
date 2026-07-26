@@ -58,7 +58,6 @@ aegis/
 ├── pairlist/          # Pairlist manager — static, volume-based, price/spread/volatility filters
 ├── risk/              # Risk management — StoplossGuard, MaxDrawdown, LowProfitPairs, Cooldown, PositionSizer
 ├── optimization/      # Hyperopt engine — parameter optimization, loss functions, space definitions
-├── notifications/     # Notification system — Telegram, Webhook, Discord
 ├── monitors/          # Live position monitoring
 ├── web/               # Web dashboard & MCP server
 ├── backtesting/       # Backtesting engine + runner, comparison, data manager (caching)
