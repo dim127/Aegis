@@ -369,7 +369,8 @@ def compute_multi_tf_scoring(
         if df is None or df.empty or len(df) < 50:
             continue
         df_work = df.copy()
-        add_ta_indicators(df_work)
+        if "ATRr_14" not in df_work.columns:
+            add_ta_indicators(df_work)
         last = df_work.iloc[-1]
 
         bos_info = detect_bos(df_work, window=15)

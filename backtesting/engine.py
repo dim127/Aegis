@@ -142,9 +142,14 @@ class BacktestingEngine:
         timerange: str,
         interval: str,
     ) -> BacktestResult:
-        df = self._download_data(pair, interval, timerange)
+        df_1h = self._download_data(pair, "1h", timerange)
+        df_4h = self._download_data(pair, "4h", timerange)
+        df_1d = self._download_data(pair, "1d", timerange)
 
-        df = strategy.populate_indicators(df)
+        if hasattr(strategy, "higher_tf_data"):
+            strategy.higher_tf_data = {"4h": df_4h, "1d": df_1d}
+
+        df = strategy.populate_indicators(df_1h)
 
         entry_signal_found = hasattr(strategy, "populate_entry_trend")
         exit_signal_found = hasattr(strategy, "populate_exit_trend")
@@ -364,7 +369,7 @@ class BacktestingEngine:
                     if stake > 0 and stake <= capital:
                         amount = (stake * leverage) / entry_price
                         fee_open_cost = entry_price * amount * fee
-                        atr_val = row.get("ATR_14", 0)
+                        atr_val = row.get("ATRr_14", 0)
                         if atr_val == 0 or pd.isna(atr_val):
                             atr_val = entry_price * 0.02
 
