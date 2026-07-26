@@ -148,6 +148,8 @@ class BacktestingEngine:
 
         if hasattr(strategy, "higher_tf_data"):
             strategy.higher_tf_data = {"4h": df_4h, "1d": df_1d}
+        if hasattr(strategy, "_pair_name"):
+            strategy._pair_name = pair
 
         if hasattr(strategy, "use_15m_filter") and strategy.use_15m_filter:
             try:

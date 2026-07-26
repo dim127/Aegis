@@ -101,8 +101,20 @@ aegis/
 # Pairlist test
 ./venv/bin/python3 -c "from pairlist.manager import PairlistManager; pm = PairlistManager({'pairlist_handlers': [{'method': 'StaticPairList', 'parameters': {'pairs': ['BTC/USDT', 'ETH/USDT']}}]}); print(pm.refresh_pairlist())"
 
-# Backtest with runner
-./venv/bin/python3 -c "from backtesting.runner import BacktestRunner; from strategy.aegis_strategy import AegisStrategy; runner = BacktestRunner(); result = runner.run_strategy(AegisStrategy, ['BTC-USD', 'ETH-USD'], timerange='90d', interval='1h'); print(f'Profit: {result.total_profit:.2f}, Trades: {result.total_trades}, WR: {result.win_rate:.1f}%')"
+# Backtest single pair (180d, varied F&G/funding)
+./venv/bin/python3 -c "from backtesting.runner import BacktestRunner; from strategy.aegis_strategy import AegisStrategy; runner = BacktestRunner(); r = runner.run_strategy(AegisStrategy, ['BTC-USD'], timerange='180d', interval='1h'); print(f'Profit: {r.total_profit:.2f}, Trades: {r.total_trades}, WR: {r.win_rate:.1f}%, PF: {r.profit_factor:.2f}, MaxDD: {r.max_drawdown:.1f}%')"
+
+# Backtest all major pairs (180d)
+./venv/bin/python3 -c "
+from backtesting.runner import BacktestRunner
+from strategy.aegis_strategy import AegisStrategy
+import logging
+logging.disable(logging.CRITICAL)
+for pair in ['BTC-USD', 'ETH-USD', 'SOL-USD', 'BNB-USD', 'AVAX-USD', 'LINK-USD', 'DOT-USD']:
+    runner = BacktestRunner()
+    r = runner.run_strategy(AegisStrategy, [pair], timerange='180d', interval='1h')
+    print(f'{pair:10s} | Profit={r.total_profit:+6.2f} | Trades={r.total_trades:3d} | WR={r.win_rate:5.1f}% | PF={r.profit_factor:5.2f} | MaxDD={r.max_drawdown:5.1f}%')
+"
 
 # Hyperopt optimization
 ./venv/bin/python3 -c "from optimization.hyperopt import HyperoptEngine; from strategy.aegis_strategy import AegisStrategy; engine = HyperoptEngine(AegisStrategy, ['ETH-USD'], timerange='90d', interval='1h'); results = engine.optimize(epochs=20, verbose=True); print(results.summary())"

@@ -26,6 +26,7 @@ class AegisStrategy(IStrategy):
     scoring_threshold = float(SCORING_STRICT_THRESHOLD)
     use_15m_filter = True
     lookback_15m_hours = 24
+    vary_fng_funding = True
 
     def __init__(self, **params):
         super().__init__()
@@ -33,6 +34,7 @@ class AegisStrategy(IStrategy):
         self.lower_tf_data = {}
         self.fng_score = 50
         self.funding_rate = 0.005
+        self._rng = None
         for k, v in params.items():
             if hasattr(self, k):
                 setattr(self, k, v)
@@ -54,6 +56,10 @@ class AegisStrategy(IStrategy):
         df["score_long"] = np.nan
         df["score_short"] = np.nan
 
+        if self.vary_fng_funding and self._rng is None:
+            pair = getattr(self, "_pair_name", "default")
+            self._rng = np.random.default_rng(hash(pair) % (2**31))
+
         for i in range(100, len(df)):
             current_time = df.index[i]
             dfs_snapshot = {"1h": df.iloc[: i + 1]}
@@ -62,10 +68,17 @@ class AegisStrategy(IStrategy):
                 if len(sliced) >= 50:
                     dfs_snapshot[tf] = sliced
 
+            if self.vary_fng_funding and self._rng is not None:
+                fng = int(np.clip(self._rng.normal(50, 15), 10, 95))
+                fr = float(np.clip(self._rng.normal(0.005, 0.005), -0.02, 0.03))
+            else:
+                fng = self.fng_score
+                fr = self.funding_rate
+
             score_long, score_short, trend_up, trend_down = compute_multi_tf_scoring(
                 dfs_snapshot,
-                fng_score=self.fng_score,
-                funding_rate=self.funding_rate,
+                fng_score=fng,
+                funding_rate=fr,
             )
 
             idx = df.index[i]
