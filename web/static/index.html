@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Trading Intelligence Pro Dashboard</title>
+    <!-- Google Fonts: Inter -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <!-- TradingView Lightweight Charts JS -->
+    <script src="https://unpkg.com/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js"></script>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div class="app-container">
+        <!-- Top Navigation Bar -->
+        <header class="navbar">
+            <div class="brand">
+                <span class="logo-icon">⚡</span>
+                <span class="brand-title">Trading Intelligence <span class="badge-pro">PRO</span></span>
+            </div>
+            <div class="live-status">
+                <span class="pulse-dot"></span>
+                <span class="status-text">LIVE MARKET FEED</span>
+            </div>
+        </header>
+
+        <!-- Main Dashboard Content -->
+        <main class="dashboard-grid">
+            <!-- Left Side: Interactive Chart -->
+            <section class="chart-section card-glass">
+                <div class="chart-header">
+                    <div class="symbol-info">
+                        <h2 id="symbol-title">BTC/USD (Bitcoin)</h2>
+                        <span class="tf-badge">Timeframe 5m</span>
+                    </div>
+                    <div class="price-display">
+                        <span class="price-val" id="live-price">$0.00</span>
+                        <span class="price-change" id="live-change">+0.00%</span>
+                    </div>
+                </div>
+
+                <!-- Active Trade Status Banner -->
+                <div class="trade-banner">
+                    <div class="trade-pill long" id="trade-pill">
+                        <span class="pill-title" id="pill-title">ACTIVE POSITION: LONG</span>
+                        <span class="pill-detail">Entry: <b>$65,000.00</b> | TP1: <b>$65,450.00</b> | SL: <b id="current-sl-text">$64,650.00</b></span>
+                    </div>
+                </div>
+
+                <!-- Main Candlestick Chart Container -->
+                <div id="main-chart" class="chart-box"></div>
+                
+                <!-- Subchart for RSI -->
+                <div class="subchart-header">
+                    <span>Relative Strength Index (RSI 14)</span>
+                    <span id="rsi-val" class="rsi-badge">0.0</span>
+                </div>
+                <div id="rsi-chart" class="subchart-box"></div>
+            </section>
+
+            <!-- Right Side: 360° Stats & Pro Metrics -->
+            <aside class="sidebar-section">
+                <!-- Metrics Grid -->
+                <div class="stats-card card-glass">
+                    <h3 class="card-title">🌐 Laporan 360° Pro Metrics</h3>
+                    
+                    <div class="metric-row">
+                        <span class="metric-label" id="tp-progress-label">Progress TP1</span>
+                        <div class="progress-bar-bg">
+                            <div id="tp-progress-bar" class="progress-bar-fill" style="width: 0%;"></div>
+                        </div>
+                        <span id="tp-progress-text" class="metric-val highlight">0.0%</span>
+                    </div>
+
+                    <div class="metric-grid">
+                        <div class="mini-stat">
+                            <span class="stat-label">Stop Loss Jarak</span>
+                            <span class="stat-val green" id="sl-distance">+$0.00</span>
+                        </div>
+                        <div class="mini-stat">
+                            <span class="stat-label">Funding Rate (8h)</span>
+                            <span class="stat-val" id="funding-rate">+0.00%</span>
+                        </div>
+                        <div class="mini-stat">
+                            <span class="stat-label">Magnet Likuidasi Short</span>
+                            <span class="stat-val cyan" id="short-liq">$0.00</span>
+                        </div>
+                        <div class="mini-stat">
+                            <span class="stat-label">Bahaya Likuidasi Long</span>
+                            <span class="stat-val red" id="long-liq">$0.00</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Pro Analytics Card -->
+                <div class="analytics-card card-glass">
+                    <h3 class="card-title">📈 Advanced Pro Analytics</h3>
+                    <div class="metric-grid">
+                        <div class="mini-stat">
+                            <span class="stat-label">BTC Gatekeeper Filter</span>
+                            <span class="stat-val" id="btc-filter">N/A</span>
+                        </div>
+                        <div class="mini-stat">
+                            <span class="stat-label">Auto Break-Even (BE)</span>
+                            <span class="stat-val" id="auto-be">Standby</span>
+                        </div>
+                        <div class="mini-stat">
+                            <span class="stat-label">Win Rate (All Trades)</span>
+                            <span class="stat-val highlight" id="win-rate">0%</span>
+                        </div>
+                        <div class="mini-stat">
+                            <span class="stat-label">Total PnL</span>
+                            <span class="stat-val" id="total-pnl">$0.00</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Fear & Greed Card -->
+                <div class="sentiment-card card-glass">
+                    <h3 class="card-title">🧠 Sentimen & On-Chain</h3>
+                    <div class="sentiment-box">
+                        <div class="score-circle" id="fng-score">31</div>
+                        <div class="sentiment-info">
+                            <span class="sentiment-status" id="fng-status">FEAR</span>
+                            <span class="sentiment-desc">Fase Akumulasi Bottom</span>
+                        </div>
+                    </div>
+                    <div class="tvl-row">
+                        <span>Ethereum On-Chain TVL</span>
+                        <b id="eth-tvl">$0.00</b>
+                    </div>
+                </div>
+            </aside>
+        </main>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>

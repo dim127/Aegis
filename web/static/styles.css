@@ -1,0 +1,348 @@
+:root {
+    --bg-dark: #090B10;
+    --card-bg: rgba(18, 24, 38, 0.75);
+    --card-border: rgba(255, 255, 255, 0.08);
+    --text-primary: #F0F4F8;
+    --text-secondary: #8E9BAE;
+    --accent-green: #00E676;
+    --accent-red: #FF1744;
+    --accent-cyan: #00E5FF;
+    --accent-yellow: #FFD600;
+    --font-main: 'Inter', sans-serif;
+}
+
+* {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+}
+
+body {
+    background-color: var(--bg-dark);
+    color: var(--text-primary);
+    font-family: var(--font-main);
+    min-height: 100vh;
+    overflow-x: hidden;
+}
+
+.app-container {
+    max-width: 1440px;
+    margin: 0 auto;
+    padding: 20px;
+}
+
+/* Navbar */
+.navbar {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 16px 24px;
+    background: var(--card-bg);
+    border: 1px solid var(--card-border);
+    backdrop-filter: blur(12px);
+    border-radius: 16px;
+    margin-bottom: 24px;
+}
+
+.brand {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.logo-icon {
+    font-size: 24px;
+}
+
+.brand-title {
+    font-weight: 700;
+    font-size: 20px;
+    letter-spacing: -0.5px;
+}
+
+.badge-pro {
+    background: linear-gradient(135deg, #00E5FF, #00E676);
+    color: #000;
+    font-size: 11px;
+    font-weight: 800;
+    padding: 2px 8px;
+    border-radius: 6px;
+    margin-left: 6px;
+}
+
+.live-status {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--accent-green);
+}
+
+.pulse-dot {
+    width: 8px;
+    height: 8px;
+    background-color: var(--accent-green);
+    border-radius: 50%;
+    box-shadow: 0 0 10px var(--accent-green);
+    animation: pulse 1.5s infinite;
+}
+
+@keyframes pulse {
+    0% { transform: scale(0.95); opacity: 0.8; }
+    50% { transform: scale(1.2); opacity: 1; }
+    100% { transform: scale(0.95); opacity: 0.8; }
+}
+
+/* Dashboard Grid */
+.dashboard-grid {
+    display: grid;
+    grid-template-columns: 1fr 340px;
+    gap: 24px;
+}
+
+.card-glass {
+    background: var(--card-bg);
+    border: 1px solid var(--card-border);
+    backdrop-filter: blur(16px);
+    border-radius: 20px;
+    padding: 24px;
+}
+
+/* Chart Section */
+.chart-section {
+    display: flex;
+    flex-direction: column;
+}
+
+.chart-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 16px;
+}
+
+.symbol-info {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.symbol-info h2 {
+    font-size: 22px;
+    font-weight: 700;
+}
+
+.tf-badge {
+    background: rgba(255, 255, 255, 0.06);
+    color: var(--text-secondary);
+    padding: 4px 10px;
+    border-radius: 8px;
+    font-size: 12px;
+}
+
+.price-display {
+    text-align: right;
+}
+
+.price-val {
+    font-size: 28px;
+    font-weight: 800;
+    display: block;
+    color: var(--accent-green);
+}
+
+.price-change {
+    font-size: 13px;
+    color: var(--accent-green);
+}
+
+/* Trade Banner */
+.trade-banner {
+    margin-bottom: 20px;
+}
+
+.trade-pill.long {
+    background: rgba(0, 230, 118, 0.1);
+    border: 1px solid rgba(0, 230, 118, 0.3);
+    padding: 12px 18px;
+    border-radius: 12px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.pill-title {
+    color: var(--accent-green);
+    font-weight: 700;
+    font-size: 13px;
+}
+
+.pill-detail {
+    font-size: 13px;
+    color: var(--text-secondary);
+}
+
+.pill-detail b {
+    color: var(--text-primary);
+}
+
+.chart-box {
+    width: 100%;
+    height: 420px;
+    border-radius: 12px;
+    overflow: hidden;
+}
+
+.subchart-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-top: 16px;
+    font-size: 13px;
+    color: var(--text-secondary);
+}
+
+.rsi-badge {
+    background: rgba(0, 229, 255, 0.15);
+    color: var(--accent-cyan);
+    font-weight: 700;
+    padding: 2px 8px;
+    border-radius: 6px;
+}
+
+.subchart-box {
+    width: 100%;
+    height: 140px;
+    border-radius: 12px;
+    overflow: hidden;
+    margin-top: 8px;
+}
+
+/* Sidebar Section */
+.sidebar-section {
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+}
+
+.card-title {
+    font-size: 16px;
+    font-weight: 700;
+    margin-bottom: 16px;
+}
+
+.metric-row {
+    margin-bottom: 16px;
+}
+
+.metric-label {
+    font-size: 13px;
+    color: var(--text-secondary);
+    display: block;
+    margin-bottom: 6px;
+}
+
+.progress-bar-bg {
+    width: 100%;
+    height: 10px;
+    background: rgba(255, 255, 255, 0.08);
+    border-radius: 5px;
+    overflow: hidden;
+    margin-bottom: 6px;
+}
+
+.progress-bar-fill {
+    height: 100%;
+    background: linear-gradient(90deg, #00E676, #00E5FF);
+    border-radius: 5px;
+    transition: width 0.4s ease;
+}
+
+.metric-val {
+    font-weight: 700;
+    font-size: 14px;
+}
+
+.metric-val.highlight {
+    color: var(--accent-green);
+}
+
+.metric-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+}
+
+.mini-stat {
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid rgba(255, 255, 255, 0.05);
+    padding: 12px;
+    border-radius: 12px;
+}
+
+.stat-label {
+    font-size: 11px;
+    color: var(--text-secondary);
+    display: block;
+    margin-bottom: 4px;
+}
+
+.stat-val {
+    font-weight: 700;
+    font-size: 14px;
+}
+
+.stat-val.green { color: var(--accent-green); }
+.stat-val.red { color: var(--accent-red); }
+.stat-val.cyan { color: var(--accent-cyan); }
+
+/* Sentiment Card */
+.sentiment-box {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    margin-bottom: 16px;
+    background: rgba(255, 214, 0, 0.05);
+    border: 1px solid rgba(255, 214, 0, 0.2);
+    padding: 16px;
+    border-radius: 14px;
+}
+
+.score-circle {
+    width: 48px;
+    height: 48px;
+    border-radius: 50%;
+    background: var(--accent-yellow);
+    color: #000;
+    font-weight: 800;
+    font-size: 20px;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+}
+
+.sentiment-status {
+    font-weight: 800;
+    font-size: 16px;
+    color: var(--accent-yellow);
+    display: block;
+}
+
+.sentiment-desc {
+    font-size: 12px;
+    color: var(--text-secondary);
+}
+
+.tvl-row {
+    display: flex;
+    justify-content: space-between;
+    font-size: 13px;
+    color: var(--text-secondary);
+    padding-top: 12px;
+    border-top: 1px solid var(--card-border);
+}
+
+.tvl-row b {
+    color: var(--text-primary);
+}

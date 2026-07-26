@@ -1,0 +1,4 @@
+Tanggal & Jam,Asset / Pair,Tipe Posisi,Harga Entry ($),Stop Loss ($),Take Profit 1 ($),Take Profit 2 ($),Risk:Reward,Status,Catatan & Alasan Setup
+2026-07-23 20:14:00,BTC/USDT,LONG,65000.0,64650.0,65450.0,65750.0,1 : 1.29,CLOSED (SL),Triple Oversold Bounce 5m/15m. Kena SL karena presisi BTC downtrend makro.
+2026-07-24 19:51:00,SOL/USDT,LONG,74.75,73.8,76.2,77.0,1 : 1.53,CLOSED (SL),Kena SL ($73.75) akibat Liquidity Sweep serentak penurunan BTC ($64.1k).
+2026-07-25 06:28:00,DOGE/USDT,SHORT,0.0696,0.07,0.068,0.067,1 : 2.0,CLOSED (BREAK-EVEN),"Scanner V2 Score: 70. Volume spike + CVD Sellers dominant + Pullback to EMA9. | UPDATED: SL adjusted to 0.0700 (Breathing room). | CLOSED MANUAL: Trend flipped bullish, freeing up margin for NY session."
