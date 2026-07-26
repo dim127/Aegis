@@ -123,6 +123,12 @@
     "discount_on_conflict": 0.15,
     "bonus_on_agreement": 0.10
   },
+  "entry_filter_15m": {
+    "enabled": true,
+    "lookback_hours": 24,
+    "require_ob_fvg_within_atr": 2.0,
+    "require_bos": false
+  },
   "scanner": {
     "altcoin_symbols": ["ETH-USD", "BNB-USD", "SOL-USD", "XRP-USD", "ADA-USD", "AVAX-USD", "DOGE-USD", "LINK-USD", "DOT-USD"],
     "hyperliquid_symbols": ["BTC/USDC:USDC", "ETH/USDC:USDC", "SOL/USDC:USDC", "BNB/USDC:USDC", "XRP/USDC:USDC", "ADA/USDC:USDC", "AVAX/USDC:USDC", "DOGE/USDC:USDC", "LINK/USDC:USDC", "DOT/USDC:USDC", "ARB/USDC:USDC", "OP/USDC:USDC", "ATOM/USDC:USDC", "SUI/USDC:USDC", "APT/USDC:USDC", "NEAR/USDC:USDC", "INJ/USDC:USDC", "TIA/USDC:USDC", "SEI/USDC:USDC", "PEPE/USDC:USDC", "WIF/USDC:USDC", "JUP/USDC:USDC", "ONDO/USDC:USDC", "ENA/USDC:USDC", "PENDLE/USDC:USDC", "STX/USDC:USDC", "FET/USDC:USDC", "AAVE/USDC:USDC", "UNI/USDC:USDC", "LDO/USDC:USDC"]

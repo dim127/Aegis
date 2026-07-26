@@ -13,6 +13,7 @@ Aegis adalah crypto trading bot berbasis scoring multi-faktor. Bukan bot frekuen
 | **Funding rate sebagai filter** | Funding terlalu tinggi (>1.5%) = short, negatif = long. |
 | **Wait and scan dulu** | Jika tidak ada setup ≥65, tidak trade. Tidak ada paksaan. |
 | **Risk management ketat** | SL 1.5× ATR, TP 3× ATR (1:2 RR). Trailing setelah profit 3%. |
+| **15m entry filter** | Setelah skor ≥ 65, **wajib** konfirmasi OB/FVG/BOS di 15m sebelum entry. 15m bukan bagian scoring, hanya timing eksekusi. |
 
 ## Scoring Components (Total 100)
 | Komponen | Max | Catatan |

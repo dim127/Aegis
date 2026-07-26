@@ -434,3 +434,53 @@ def compute_multi_tf_scoring(
     final_short = round(min(max(final_short, 0), 100))
 
     return final_long, final_short, final_trend_up, final_trend_down
+
+
+def check_15m_entry_confirmation(
+    df_15m_slice: pd.DataFrame,
+    entry_price: float,
+    side: str = "long",
+    max_atr_distance: float = 2.0,
+) -> dict:
+    if df_15m_slice is None or df_15m_slice.empty or len(df_15m_slice) < 20:
+        return {"confirmed": False, "reasons": []}
+
+    if "ATRr_14" not in df_15m_slice.columns:
+        add_ta_indicators(df_15m_slice)
+
+    bos_info = detect_bos(df_15m_slice, window=10)
+    ob_info = order_blocks(df_15m_slice, lookback=30)
+    fvg_info = fair_value_gaps(df_15m_slice, lookback=30)
+    atr_val = df_15m_slice["ATRr_14"].iloc[-1]
+    price = df_15m_slice["Close"].iloc[-1]
+
+    confirmed = False
+    reasons = []
+
+    if side == "long":
+        if bos_info.get("bullish_bos"):
+            confirmed = True
+            reasons.append("BULLISH BOS")
+        ob_support = ob_info.get("nearest_bullish_ob_high")
+        if ob_support is not None and abs(price - ob_support) < atr_val * max_atr_distance:
+            confirmed = True
+            reasons.append(f"Bullish OB @ ${ob_support:.4f}")
+        nearest_fvg = fvg_info.get("nearest_fvg_price")
+        if nearest_fvg is not None and nearest_fvg < price and abs(price - nearest_fvg) < atr_val * max_atr_distance:
+            confirmed = True
+            reasons.append(f"FVG below @ ${nearest_fvg:.4f}")
+
+    else:
+        if bos_info.get("bearish_bos"):
+            confirmed = True
+            reasons.append("BEARISH BOS")
+        ob_resistance = ob_info.get("nearest_bearish_ob_low")
+        if ob_resistance is not None and abs(ob_resistance - price) < atr_val * max_atr_distance:
+            confirmed = True
+            reasons.append(f"Bearish OB @ ${ob_resistance:.4f}")
+        nearest_fvg = fvg_info.get("nearest_fvg_price")
+        if nearest_fvg is not None and nearest_fvg > price and abs(nearest_fvg - price) < atr_val * max_atr_distance:
+            confirmed = True
+            reasons.append(f"FVG above @ ${nearest_fvg:.4f}")
+
+    return {"confirmed": confirmed, "reasons": reasons}

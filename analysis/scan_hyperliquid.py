@@ -8,11 +8,11 @@ import numpy as np
 sys.path.insert(0, ".")
 from indicators import (
     add_ta_indicators,
-    compute_scoring,
     compute_multi_tf_scoring,
     detect_bos,
     order_blocks,
     fair_value_gaps,
+    check_15m_entry_confirmation,
     btc_steering_filter,
 )
 from config import SCORING_STRICT_THRESHOLD
@@ -100,6 +100,11 @@ def scan_hyperliquid():
             if df_1d is not None and len(df_1d) >= 20:
                 dataframes["1d"] = df_1d
 
+            raw_15m = exchange.fetch_ohlcv(sym, "15m", limit=96)
+            df_15m = _ohlcv_to_dataframe(raw_15m)
+            if df_15m is not None and len(df_15m) >= 20:
+                add_ta_indicators(df_15m)
+
             funding_rate = 0.005
             try:
                 fr = exchange.fetch_funding_rate(sym)
@@ -177,6 +182,35 @@ def scan_hyperliquid():
                 fvg_str = f"FVG {direction} @ ${nearest_fvg:.4f}"
             print(f"   FVG         : {fvg_str if fvg_str else 'None nearby'}")
 
+            conf_15m = None
+            if df_15m is not None and len(df_15m) >= 20:
+                conf_15m = check_15m_entry_confirmation(
+                    df_15m, live_price,
+                    "long" if score_long >= score_short else "short"
+                )
+                ob_support_15m = None
+                ob_resistance_15m = None
+                bos_15m = detect_bos(df_15m, window=10)
+                ob_15m = order_blocks(df_15m, lookback=30)
+                fvg_15m = fair_value_gaps(df_15m, lookback=30)
+                atr_15m = df_15m["ATRr_14"].iloc[-1]
+                ob_support_15m = ob_15m.get("nearest_bullish_ob_high")
+                ob_resistance_15m = ob_15m.get("nearest_bearish_ob_low")
+                nearest_fvg_15m = fvg_15m.get("nearest_fvg_price")
+
+                parts_15m = []
+                if bos_15m.get("bullish_bos"): parts_15m.append("BULLISH BOS")
+                if bos_15m.get("bearish_bos"): parts_15m.append("BEARISH BOS")
+                if ob_support_15m is not None and abs(live_price - ob_support_15m) < atr_15m * 2:
+                    parts_15m.append(f"Bullish OB @ ${ob_support_15m:.4f}")
+                if ob_resistance_15m is not None and abs(ob_resistance_15m - live_price) < atr_15m * 2:
+                    parts_15m.append(f"Bearish OB @ ${ob_resistance_15m:.4f}")
+                if nearest_fvg_15m is not None and abs(live_price - nearest_fvg_15m) < atr_15m * 2:
+                    d = "above" if nearest_fvg_15m > live_price else "below"
+                    parts_15m.append(f"FVG {d} @ ${nearest_fvg_15m:.4f}")
+                print(f"   15m struct  : {' | '.join(parts_15m) if parts_15m else 'None nearby'}")
+                print(f"   15m confirm : {'YES' if conf_15m and conf_15m['confirmed'] else 'NO'}")
+
             fr_pct = funding_rate * 100
             fr_note = ""
             if funding_rate > 0.015:
@@ -198,6 +232,8 @@ def scan_hyperliquid():
                 sl = avg_entry - (atr * 1.5)
                 tp = avg_entry + (atr * 3.0)
                 print(f"   Entry: ~${avg_entry:.4f} | SL ~${sl:.4f} | TP ~${tp:.4f} (1:2)")
+                if conf_15m:
+                    print(f"   15m: {'✅ CONFIRMED' if conf_15m['confirmed'] else '❌ NOT CONFIRMED'}")
 
             if score_short >= SCORING_STRICT_THRESHOLD and not trend_up:
                 print(f"   >>> STRONG SHORT SETUP <<<")
@@ -207,6 +243,8 @@ def scan_hyperliquid():
                 sl = avg_entry + (atr * 1.5)
                 tp = avg_entry - (atr * 3.0)
                 print(f"   Entry: ~${avg_entry:.4f} | SL ~${sl:.4f} | TP ~${tp:.4f} (1:2)")
+                if conf_15m:
+                    print(f"   15m: {'✅ CONFIRMED' if conf_15m['confirmed'] else '❌ NOT CONFIRMED'}")
 
         except Exception as e:
             print(f"   ERROR: {e}")

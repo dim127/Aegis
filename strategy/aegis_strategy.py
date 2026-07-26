@@ -2,7 +2,7 @@ import pandas as pd
 import numpy as np
 
 from strategy.base import IStrategy
-from indicators import add_ta_indicators, compute_multi_tf_scoring
+from indicators import add_ta_indicators, compute_multi_tf_scoring, check_15m_entry_confirmation
 from config import SCORING_STRICT_THRESHOLD
 
 
@@ -24,10 +24,13 @@ class AegisStrategy(IStrategy):
     trailing_only_offset_is_reached = True
 
     scoring_threshold = float(SCORING_STRICT_THRESHOLD)
+    use_15m_filter = True
+    lookback_15m_hours = 24
 
     def __init__(self, **params):
         super().__init__()
         self.higher_tf_data = {}
+        self.lower_tf_data = {}
         self.fng_score = 50
         self.funding_rate = 0.005
         for k, v in params.items():
@@ -37,6 +40,9 @@ class AegisStrategy(IStrategy):
     def populate_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
         add_ta_indicators(df)
         for tf_df in self.higher_tf_data.values():
+            if "ATRr_14" not in tf_df.columns:
+                add_ta_indicators(tf_df)
+        for tf_df in self.lower_tf_data.values():
             if "ATRr_14" not in tf_df.columns:
                 add_ta_indicators(tf_df)
         return df
@@ -67,13 +73,32 @@ class AegisStrategy(IStrategy):
             df.loc[idx, "score_short"] = score_short
 
             if score_long >= self.scoring_threshold and not trend_down:
-                df.loc[idx, "enter_long"] = 1
-                df.loc[idx, "enter_tag"] = "aegis_mtf_long"
-            elif score_short >= self.scoring_threshold and not trend_up:
-                df.loc[idx, "enter_short"] = 1
-                df.loc[idx, "enter_tag"] = "aegis_mtf_short"
+                entry_price = df.loc[idx, "Close"]
+                confirmed = self._check_15m_confirmation(current_time, entry_price, "long")
+                if confirmed or not self.use_15m_filter:
+                    df.loc[idx, "enter_long"] = 1
+                    df.loc[idx, "enter_tag"] = "aegis_mtf_long_15m" if confirmed else "aegis_mtf_long"
+
+            if score_short >= self.scoring_threshold and not trend_up:
+                entry_price = df.loc[idx, "Close"]
+                confirmed = self._check_15m_confirmation(current_time, entry_price, "short")
+                if confirmed or not self.use_15m_filter:
+                    df.loc[idx, "enter_short"] = 1
+                    df.loc[idx, "enter_tag"] = "aegis_mtf_short_15m" if confirmed else "aegis_mtf_short"
 
         return df
+
+    def _check_15m_confirmation(self, current_time: pd.Timestamp, entry_price: float, side: str) -> bool:
+        if "15m" not in self.lower_tf_data:
+            return True
+        df_15m = self.lower_tf_data["15m"]
+        lookback = pd.Timedelta(hours=self.lookback_15m_hours)
+        start = current_time - lookback
+        slice_15m = df_15m[(df_15m.index <= current_time) & (df_15m.index >= start)]
+        if len(slice_15m) < 20:
+            return True
+        result = check_15m_entry_confirmation(slice_15m, entry_price, side)
+        return result["confirmed"]
 
     def populate_exit_trend(self, df: pd.DataFrame) -> pd.DataFrame:
         df["exit_long"] = 0

@@ -149,6 +149,14 @@ class BacktestingEngine:
         if hasattr(strategy, "higher_tf_data"):
             strategy.higher_tf_data = {"4h": df_4h, "1d": df_1d}
 
+        if hasattr(strategy, "use_15m_filter") and strategy.use_15m_filter:
+            try:
+                df_15m = self._download_data(pair, "15m", "30d")
+                if hasattr(strategy, "lower_tf_data"):
+                    strategy.lower_tf_data["15m"] = df_15m
+            except Exception:
+                pass
+
         df = strategy.populate_indicators(df_1h)
 
         entry_signal_found = hasattr(strategy, "populate_entry_trend")
