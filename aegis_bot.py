@@ -89,7 +89,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def scan_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("\U0001f50d Scanning all 5 pairs...")
+    await update.message.reply_text(f"\U0001f50d Scanning all {len(strategy.pairs)} pairs...")
     await scan_and_notify(context)
 
 
