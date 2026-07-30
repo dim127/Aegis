@@ -16,7 +16,7 @@
     "min_confluence": 3
   },
   "telegram": {
-    "scan_interval_minutes": 15,
+    "scan_interval_minutes": 1,
     "notify_on_scan": true,
     "notify_on_error": true
   }

@@ -53,13 +53,15 @@ def run_scan():
     return strategy.analyze()
 
 
-async def scan_and_notify(context: ContextTypes.DEFAULT_TYPE):
+async def perform_scan(context: ContextTypes.DEFAULT_TYPE, is_manual=False):
     logger.info("Running scan...")
     try:
         results = await asyncio.get_event_loop().run_in_executor(None, run_scan)
         context.bot_data["last_scan"] = datetime.now()
 
         if not results:
+            if not is_manual:
+                return
             msg = format_no_trade_message()
         else:
             banner = format_scan_banner(len(results))
@@ -90,7 +92,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def scan_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"\U0001f50d Scanning all {len(strategy.pairs)} pairs...")
-    await scan_and_notify(context)
+    await perform_scan(context, is_manual=True)
 
 
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -123,7 +125,7 @@ def main():
     app.add_handler(CommandHandler("help", help_command))
 
     app.job_queue.run_repeating(
-        scan_and_notify,
+        perform_scan,
         interval=SCAN_INTERVAL * 60,
         first=10,
     )
