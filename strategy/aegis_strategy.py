@@ -16,7 +16,7 @@ class AegisSMCStrategy:
     DEFAULT_RR_TARGET = 3.0
     DEFAULT_ATR_PROXIMITY = 2.0
     DEFAULT_MIN_CONFLUENCE = 3
-    TIMEFRAME_DURATIONS = {"1m": pd.Timedelta(minutes=1), "15m": pd.Timedelta(minutes=15)}
+    TIMEFRAME_DURATIONS = {"1m": pd.Timedelta(minutes=1), "5m": pd.Timedelta(minutes=5), "15m": pd.Timedelta(minutes=15), "1h": pd.Timedelta(hours=1), "4h": pd.Timedelta(hours=4)}
 
     def __init__(self, exchange=None, config: dict | None = None):
         self.exchange = exchange or ccxt.hyperliquid({
@@ -63,42 +63,42 @@ class AegisSMCStrategy:
         df = df.loc[df.index + duration <= now]
         return df if len(df) >= 50 else None
 
-    def _check_direction(self, df_15m: pd.DataFrame, df_1m: pd.DataFrame, direction: str) -> dict:
+    def _check_direction(self, df_htf: pd.DataFrame, df_ltf: pd.DataFrame, direction: str, tf_htf: str, tf_ltf: str) -> dict:
         bull_dir = direction == "long"
 
-        structure_15m = latest_structure_event(df_15m, direction, window=15)
-        atr_15m_val = atr(df_15m, period=14).iloc[-1] if len(df_15m) > 14 else 0
+        structure_htf = latest_structure_event(df_htf, direction, window=15)
+        atr_htf_val = atr(df_htf, period=14).iloc[-1] if len(df_htf) > 14 else 0
 
-        structure_1m = detect_structure(df_1m, window=15)
-        atr_1m_val = atr(df_1m, period=14).iloc[-1] if len(df_1m) > 14 else 0
-        fvg_1m_info = fair_value_gaps(df_1m, lookback=60)
+        structure_ltf = detect_structure(df_ltf, window=15)
+        atr_ltf_val = atr(df_ltf, period=14).iloc[-1] if len(df_ltf) > 14 else 0
+        fvg_ltf_info = fair_value_gaps(df_ltf, lookback=60)
 
         if bull_dir:
-            struct_15m = structure_15m["bullish_choch"] or structure_15m["bullish_bos"]
-            confirm_1m = structure_1m["bullish_choch"]
-            fvg_below = fvg_1m_info["bullish_fvgs"]
+            struct_htf = structure_htf["bullish_choch"] or structure_htf["bullish_bos"]
+            confirm_ltf = structure_ltf["bullish_choch"]
+            fvg_below = fvg_ltf_info["bullish_fvgs"]
         else:
-            struct_15m = structure_15m["bearish_choch"] or structure_15m["bearish_bos"]
-            confirm_1m = structure_1m["bearish_choch"]
-            fvg_below = fvg_1m_info["bearish_fvgs"]
+            struct_htf = structure_htf["bearish_choch"] or structure_htf["bearish_bos"]
+            confirm_ltf = structure_ltf["bearish_choch"]
+            fvg_below = fvg_ltf_info["bearish_fvgs"]
 
         # 1. 15m structure shift
-        reason_15m = None
-        if structure_15m["bullish_choch"] if bull_dir else structure_15m["bearish_choch"]:
-            reason_15m = f"15M CHOCH {'Bullish' if bull_dir else 'Bearish'}"
-        elif structure_15m["bullish_bos"] if bull_dir else structure_15m["bearish_bos"]:
-            reason_15m = f"15M BOS {'Bullish' if bull_dir else 'Bearish'}"
+        reason_htf = None
+        if structure_htf["bullish_choch"] if bull_dir else structure_htf["bearish_choch"]:
+            reason_htf = f"{tf_htf.upper()} CHOCH {'Bullish' if bull_dir else 'Bearish'}"
+        elif structure_htf["bullish_bos"] if bull_dir else structure_htf["bearish_bos"]:
+            reason_htf = f"{tf_htf.upper()} BOS {'Bullish' if bull_dir else 'Bearish'}"
 
         # 2. 1m CHOCH alignment
-        reason_1m = None
-        if confirm_1m:
-            reason_1m = f"1M CHOCH {'Bullish' if bull_dir else 'Bearish'} aligned"
+        reason_ltf = None
+        if confirm_ltf:
+            reason_ltf = f"{tf_ltf.upper()} CHOCH {'Bullish' if bull_dir else 'Bearish'} aligned"
 
         # 3. FVG on 1m
         best_fvg = None
         reason_fvg = None
         structure_events = [
-            event for event in [structure_15m["event"], structure_1m["event"]]
+            event for event in [structure_htf["event"], structure_ltf["event"]]
             if event is not None and event["direction"] == direction
         ]
         structure_time = max((event["index"] for event in structure_events), default=None)
@@ -108,75 +108,75 @@ class AegisSMCStrategy:
                 for fvg in sorted_fvgs:
                     if structure_time is not None and fvg["index"] < structure_time:
                         continue
-                    if not is_fvg_mitigated(df_1m, fvg["gap_low"], fvg["gap_high"], fvg["index"]):
+                    if not is_fvg_mitigated(df_ltf, fvg["gap_low"], fvg["gap_high"], fvg["index"]):
                         best_fvg = fvg
                         break
             if best_fvg:
-                reason_fvg = f"1M Bullish FVG ${best_fvg['gap_low']:.2f}-${best_fvg['gap_high']:.2f} (fresh)"
+                reason_fvg = f"{tf_ltf.upper()} Bullish FVG ${best_fvg['gap_low']:.2f}-${best_fvg['gap_high']:.2f} (fresh)"
         else:
             sorted_fvgs = sorted(fvg_below, key=lambda x: x["gap_low"])
             if sorted_fvgs:
                 for fvg in sorted_fvgs:
                     if structure_time is not None and fvg["index"] < structure_time:
                         continue
-                    if not is_fvg_mitigated(df_1m, fvg["gap_low"], fvg["gap_high"], fvg["index"]):
+                    if not is_fvg_mitigated(df_ltf, fvg["gap_low"], fvg["gap_high"], fvg["index"]):
                         best_fvg = fvg
                         break
             if best_fvg:
-                reason_fvg = f"1M Bearish FVG ${best_fvg['gap_low']:.2f}-${best_fvg['gap_high']:.2f} (fresh)"
+                reason_fvg = f"{tf_ltf.upper()} Bearish FVG ${best_fvg['gap_low']:.2f}-${best_fvg['gap_high']:.2f} (fresh)"
 
         entry = best_fvg["gap_mid"] if best_fvg else None
 
         # 4. OB from the 15m structure displacement, measured against the limit entry.
         reason_ob = None
-        structure_event_15m = structure_15m["event"] if struct_15m else None
+        structure_event_htf = structure_htf["event"] if struct_htf else None
         associated_ob = None
-        if entry is not None and structure_event_15m is not None:
-            associated_ob = order_block_for_event(df_15m, structure_event_15m["index"], direction)
-            if associated_ob is not None and not associated_ob["fully_mitigated"] and associated_ob["mitigation_ratio"] < 0.5 and atr_15m_val > 0:
+        if entry is not None and structure_event_htf is not None:
+            associated_ob = order_block_for_event(df_htf, structure_event_htf["index"], direction)
+            if associated_ob is not None and not associated_ob["fully_mitigated"] and associated_ob["mitigation_ratio"] < 0.5 and atr_htf_val > 0:
                 ob_price = associated_ob["high"] if bull_dir else associated_ob["low"]
                 dist = abs(entry - ob_price)
-                if dist < atr_15m_val * self.atr_proximity:
-                    reason_ob = f"{'Bullish' if bull_dir else 'Bearish'} OB ${ob_price:.2f} ({dist/atr_15m_val:.1f} ATR)"
+                if dist < atr_htf_val * self.atr_proximity:
+                    reason_ob = f"{'Bullish' if bull_dir else 'Bearish'} OB ${ob_price:.2f} ({dist/atr_htf_val:.1f} ATR)"
 
         # 5. Breakout candle impulse
         reason_breakout = None
-        if is_breakout_candle(df_1m, direction, lookback=5, vol_multiplier=1.15):
-            reason_breakout = "1M impulsive + volume spike"
+        if is_breakout_candle(df_ltf, direction, lookback=5, vol_multiplier=1.15):
+            reason_breakout = f"{tf_ltf.upper()} impulsive + volume spike"
             
         # 6. Liquidity Sweep before CHOCH
         reason_sweep = None
-        if structure_time is not None and detect_liquidity_sweep(df_1m, direction, before=structure_time, window=30):
-            reason_sweep = f"1M Liquidity Sweep before CHOCH"
+        if structure_time is not None and detect_liquidity_sweep(df_ltf, direction, before=structure_time, window=30):
+            reason_sweep = f"{tf_ltf.upper()} Liquidity Sweep before CHOCH"
 
         # Mandatory: structure shift (15m CHOCH/BOS OR 1m CHOCH).
-        has_structure = struct_15m or confirm_1m
+        has_structure = struct_htf or confirm_ltf
         if not has_structure:
-            return {"valid": False, "reason": "No structure shift (15m/1m CHOCH/BOS)",
+            return {"valid": False, "reason": f"No structure shift ({tf_htf}/{tf_ltf} CHOCH/BOS)",
                     "reasons": [], "confluence": 0}
 
         # Mandatory: fresh FVG
         if best_fvg is None:
             return {"valid": False, "reason": "No valid FVG for entry",
-                    "reasons": [r for r in [reason_15m, reason_1m] if r], "confluence": 0}
+                    "reasons": [r for r in [reason_htf, reason_ltf] if r], "confluence": 0}
 
         # Mandatory: liquidity sweep (break + reversal confirmation)
         if reason_sweep is None:
             return {"valid": False, "reason": "No liquidity sweep before structure shift",
-                    "reasons": [r for r in [reason_15m, reason_1m, reason_fvg] if r], "confluence": 0}
+                    "reasons": [r for r in [reason_htf, reason_ltf, reason_fvg] if r], "confluence": 0}
 
-        reasons = [r for r in [reason_15m, reason_1m, reason_fvg, reason_ob, reason_breakout, reason_sweep] if r]
+        reasons = [r for r in [reason_htf, reason_ltf, reason_fvg, reason_ob, reason_breakout, reason_sweep] if r]
         confluence = len(reasons)
 
         if confluence < self.min_confluence:
             return {"valid": False, "reason": f"Confluence too low: {confluence}/5",
                     "reasons": reasons, "confluence": confluence}
 
-        sl = liquidity_inflection(df_1m, direction, before=best_fvg["index"])
+        sl = liquidity_inflection(df_ltf, direction, before=best_fvg["index"])
         if sl is None:
             return {"valid": False, "reason": "No confirmed swing before FVG for Stop Loss"}
             
-        sl_buffer = atr_1m_val * 1.5
+        sl_buffer = atr_ltf_val * 1.5
         if bull_dir:
             sl -= sl_buffer
         else:
@@ -197,15 +197,15 @@ class AegisSMCStrategy:
 
         action = "BUY LIMIT" if bull_dir else "SELL LIMIT"
 
-        if reason_15m:
-            htf_bias_text = f"{'Bullish' if bull_dir else 'Bearish'} - {reason_15m}"
+        if reason_htf:
+            htf_bias_text = f"{'Bullish' if bull_dir else 'Bearish'} - {reason_htf}"
         else:
-            htf_bias_text = f"{'Bullish' if bull_dir else 'Bearish'} - {reason_1m or 'BOS'}"
+            htf_bias_text = f"{'Bullish' if bull_dir else 'Bearish'} - {reason_ltf or 'BOS'}"
 
-        if confirm_1m and reason_fvg:
-            ltf_conf_text = "Valid CHOCH + FVG"
+        if confirm_ltf and reason_fvg:
+            ltf_conf_text = f"Valid {tf_ltf.upper()} CHOCH + FVG"
         elif reason_fvg:
-            ltf_conf_text = "Valid FVG (no 1M CHOCH)"
+            ltf_conf_text = f"Valid FVG (no {tf_ltf.upper()} CHOCH)"
         else:
             ltf_conf_text = "Invalid"
 
@@ -220,9 +220,9 @@ class AegisSMCStrategy:
             "risk": round(risk, 2),
             "confluence": confluence,
             "reasons": reasons,
-            "timestamp": df_1m.index[-1],
-            "structure_15m": structure_15m["event"],
-            "structure_1m": structure_1m["event"],
+            "timestamp": df_ltf.index[-1],
+            "structure_htf": structure_htf["event"],
+            "structure_ltf": structure_ltf["event"],
             "fvg_timestamp": best_fvg["index"],
             "ob_timestamp": associated_ob["index"] if associated_ob else None,
             "htf_bias_text": htf_bias_text,
@@ -230,32 +230,35 @@ class AegisSMCStrategy:
             "management_rules": "Hold until Stop Loss or Take Profit.",
         }
 
-    def analyze_pair(self, sym: str) -> dict | None:
+    def analyze_pair(self, sym: str, tf_htf: str, tf_ltf: str) -> dict | None:
         base = sym.split("/")[0]
-        raw_15m = self.exchange.fetch_ohlcv(sym, "15m", limit=100)
-        raw_1m = self.exchange.fetch_ohlcv(sym, "1m", limit=120)
-        df_15m = self._ohlcv_to_df(raw_15m, "15m")
-        df_1m = self._ohlcv_to_df(raw_1m, "1m")
-        if df_15m is None or df_1m is None:
+        raw_htf = self.exchange.fetch_ohlcv(sym, tf_htf, limit=100)
+        raw_ltf = self.exchange.fetch_ohlcv(sym, tf_ltf, limit=120)
+        df_htf = self._ohlcv_to_df(raw_htf, tf_htf)
+        df_ltf = self._ohlcv_to_df(raw_ltf, tf_ltf)
+        if df_htf is None or df_ltf is None:
             return None
 
         best = None
         for direction in ["long", "short"]:
-            result = self._check_direction(df_15m, df_1m, direction)
+            result = self._check_direction(df_htf, df_ltf, direction, tf_htf, tf_ltf)
             if result["valid"]:
                 result["pair"] = sym
                 result["base"] = base
+                result["tf_combo"] = f"{tf_htf}/{tf_ltf}"
                 if best is None or result["rr"] > best["rr"]:
                     best = result
         return best
 
     def analyze(self) -> list[dict]:
         results = []
+        combinations = [("15m", "1m"), ("1h", "5m"), ("4h", "15m")]
         for sym in self.pairs:
-            try:
-                setup = self.analyze_pair(sym)
-                if setup:
-                    results.append(setup)
-            except Exception as e:
-                print(f"  ERROR {sym}: {e}")
+            for tf_htf, tf_ltf in combinations:
+                try:
+                    setup = self.analyze_pair(sym, tf_htf, tf_ltf)
+                    if setup:
+                        results.append(setup)
+                except Exception as e:
+                    print(f"  ERROR {sym} ({tf_htf}/{tf_ltf}): {e}")
         return results

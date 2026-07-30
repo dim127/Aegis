@@ -8,7 +8,7 @@ def scan_smc():
     strategy = AegisSMCStrategy()
     bases = [p.split("/")[0] for p in strategy.pairs]
     print("=" * 62)
-    print("  AEGIS V4 — SMC SCANNER (15M + 1M)")
+    print("  AEGIS V4 — SMC MULTI-TIMEFRAME SCANNER")
     print(f"  Pairs: {' '.join(bases)} | RR Target: 1:{strategy.rr_target:.0f}")
     print("=" * 62)
 
@@ -23,10 +23,10 @@ def scan_smc():
         base = s["base"]
         dir_label = "LONG" if s["direction"] == "long" else "SHORT"
         print(f"\n{'=' * 50}")
-        print(f"  {base} | {dir_label}")
+        print(f"  {base} [{s['tf_combo']}] | {dir_label}")
         print(f"{'=' * 50}")
-        print(f"HTF Bias (15M): {s['htf_bias_text']}")
-        print(f"LTF Confirmation (1M): {s['ltf_conf_text']}")
+        print(f"HTF Bias: {s['htf_bias_text']}")
+        print(f"LTF Confirmation: {s['ltf_conf_text']}")
         print(f"  Take Profit: ${s['tp']:.2f} → 1:{s['rr']:.2f} RR")
         print()
         print("Trade Setup:")

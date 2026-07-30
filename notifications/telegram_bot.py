@@ -13,7 +13,7 @@ def format_setup_message(setup: dict) -> str:
     ts_str = str(ts) if not hasattr(ts, "strftime") else ts.strftime(DATE_FMT)
 
     lines = [
-        f"{emoji} *{base} | {direction}*",
+        f"{emoji} *{base} [{setup.get('tf_combo', '15m/1m')}] | {direction}*",
         f"```",
         f"Entry    ${setup['entry']:.2f}",
         f"SL       ${setup['sl']:.2f}",
