@@ -22,6 +22,18 @@ Dokumen ini mencatat evaluasi historis setup trading (baik yang Miss maupun Hit)
 
 ---
 
+### 3. Post-Mortem BTC Long Setup (SMC 3-Step)
+- **Hasil:** Risk-Free / Breakeven (Target TP1 tersentuh, SL dinaikkan ke *Entry* dan tersentuh sebelum mencapai TP2/TP Utama).
+- **Akar Masalah:** Tidak ada masalah (*Flawless Execution*). Sistem manajemen risiko "Risk-Free Protocol" (geser SL ke *entry* saat harga mencapai rasio aman) berfungsi dengan sempurna menyelamatkan modal saat terjadi *reversal* tiba-tiba di pasar.
+- **Pelajaran:** Aturan *Breakeven* mutlak diperlukan di *scalping* 1 Menit (1M) karena volatilitas bisa berbalik kapan saja. Modal 100% terselamatkan.
+
+### 4. Post-Mortem ETH Short Setup (Manual Entry)
+- **Hasil:** Miss (Kena mutlak Stop Loss di $1,915.20).
+- **Akar Masalah:** Eksekusi manual berlawanan dengan instruksi mesin. *Scanner* SMC meneriakkan status "NO TRADE / Chop on 1M", namun posisi tetap diambil di area *sideways* tanpa menunggu dorongan impulsif institusi.
+- **Pelajaran:** Disiplin mutlak. Jangan pernah memaksa masuk pasar (*overtrading*) jika mesin mendeteksi tidak ada struktur *Smart Money* yang sejajar di 15M dan 1M.
+
+---
+
 ## 🛡️ ATURAN EMAS SISTEM ANALISIS BARU (GOLDEN RULES)
 
 1. 📏 **ATR & Liquidity Buffer SL:** SL wajib diberi penyangga 1.5x ATR atau ditaruh di bawah 100x Liquidation Magnet agar tidak terkena *jarum candle (wick)*.

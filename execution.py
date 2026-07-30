@@ -79,28 +79,6 @@ def place_limit_order(
         return None
 
 
-def place_market_order(
-    side: str,
-    symbol: str,
-    amount: float,
-    exchange_name: str = "binance_futures",
-    api_key: str = "",
-    api_secret: str = "",
-    reduce_only: bool = False,
-    **kwargs,
-) -> Optional[dict]:
-    try:
-        exchange = _create_exchange(exchange_name, api_key, api_secret)
-        params = {"reduceOnly": reduce_only} if reduce_only else {}
-        params.update(kwargs)
-        order = exchange.create_market_order(symbol, side, amount, params)
-        logger.info(f"Market {side} order filled: {amount} {symbol}")
-        return order
-    except Exception as e:
-        logger.error(f"Error placing market {side} order for {symbol}: {e}")
-        return None
-
-
 def cancel_order(order_id: str, symbol: str, exchange_name: str = "binance_futures") -> bool:
     try:
         exchange = _create_exchange(exchange_name)

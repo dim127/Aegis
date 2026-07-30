@@ -1,7 +1,6 @@
 {
   "exchange": {
-    "name": "binance",
-    "trading_mode": "futures",
+    "name": "hyperliquid",
     "sandbox": false,
     "rate_limit": true,
     "hyperliquid": {
@@ -10,138 +9,15 @@
       "private_key": ""
     }
   },
-  "pairlist": {
-    "pairlist_handlers": [
-      {
-        "method": "VolumePairList",
-        "parameters": {
-          "number_assets": 20,
-          "sort_key": "quoteVolume",
-          "min_volume": 100000,
-          "exchange": "binance",
-          "quote_currency": "USDT"
-        }
-      },
-      {
-        "method": "PriceFilter",
-        "parameters": {
-          "min_price": 0.000001,
-          "max_price": 100000,
-          "low_price_ratio": 0.01
-        }
-      },
-      {
-        "method": "SpreadFilter",
-        "parameters": {
-          "max_spread_ratio": 0.005
-        }
-      }
-    ],
-    "hyperliquid_pairlist": {
-      "enabled": true,
-      "method": "HyperliquidMajorPairList",
-      "parameters": {
-        "number_assets": 30,
-        "min_volume": 100000
-      }
-    },
-    "blacklist": ["USDT/USD", "BUSD/USD", "DAI/USD", "TUSD/USD"],
-    "static_pairs": ["BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT", "XRP/USDT", "ADA/USDT", "AVAX/USDT", "DOGE/USDT", "LINK/USDT", "DOT/USDT"]
+  "smc_pairs": ["BTC", "ETH", "BNB", "SOL", "HYPE", "SPX", "MKTS-GOLD", "MKTS-AAPL", "MKTS-NVDA", "XRP", "LINK"],
+  "smc": {
+    "rr_target": 3.0,
+    "atr_proximity": 4.0,
+    "min_confluence": 3
   },
-  "scoring": {
-    "threshold": 65,
-    "technical_max": 40,
-    "volume_max": 20,
-    "market_structure_max": 20,
-    "derivatives_max": 20,
-    "sentiment_max": 10
-  },
-  "risk": {
-    "protections": [
-      {
-        "method": "StoplossGuard",
-        "parameters": {
-          "lookback_hours": 24,
-          "trade_limit": 3,
-          "stop_duration_hours": 4,
-          "only_per_pair": false
-        }
-      },
-      {
-        "method": "MaxDrawdown",
-        "parameters": {
-          "max_drawdown": 0.15,
-          "stop_duration_hours": 12,
-          "trade_limit": 10
-        }
-      },
-      {
-        "method": "LowProfitPairs",
-        "parameters": {
-          "lookback_days": 7,
-          "trade_limit": 3,
-          "stop_duration_hours": 24,
-          "required_profit": 0.0
-        }
-      },
-      {
-        "method": "CooldownPeriod",
-        "parameters": {
-          "cooldown_hours": 4,
-          "only_per_pair": true
-        }
-      }
-    ],
-    "position_sizing": {
-      "risk_per_trade": 0.01,
-      "max_position_size": null,
-      "min_position_size": null
-    }
-  },
-  "backtest": {
-    "start_capital": 1000.0,
-    "fee": 0.0007,
-    "slippage": 0.0005,
-    "leverage": 1.0,
-    "max_open_trades": 3,
-    "stake_amount": 30.0,
-    "timerange": "180d",
-    "interval": "1h"
-  },
-  "hyperopt": {
-    "epochs": 100,
-    "loss_function": "sharpe",
-    "random_state": 42,
-    "early_stop": 20,
-    "n_initial_points": 10,
-    "acq_func": "gp_hedge"
-  },
-  "multi_tf_scoring": {
-    "enabled": true,
-    "timeframes": ["1h", "4h", "1d"],
-    "weights": {"1h": 0.50, "4h": 0.30, "1d": 0.20},
-    "discount_on_conflict": 0.15,
-    "bonus_on_agreement": 0.10
-  },
-  "entry_filter_15m": {
-    "enabled": true,
-    "lookback_hours": 24,
-    "require_ob_fvg_within_atr": 2.0,
-    "require_bos": false
-  },
-  "scanner": {
-    "altcoin_symbols": ["ETH-USD", "BNB-USD", "SOL-USD", "XRP-USD", "ADA-USD", "AVAX-USD", "DOGE-USD", "LINK-USD", "DOT-USD"],
-    "hyperliquid_symbols": ["BTC/USDC:USDC", "ETH/USDC:USDC", "SOL/USDC:USDC", "BNB/USDC:USDC", "XRP/USDC:USDC", "ADA/USDC:USDC", "AVAX/USDC:USDC", "DOGE/USDC:USDC", "LINK/USDC:USDC", "DOT/USDC:USDC", "ARB/USDC:USDC", "OP/USDC:USDC", "ATOM/USDC:USDC", "SUI/USDC:USDC", "APT/USDC:USDC", "NEAR/USDC:USDC", "INJ/USDC:USDC", "TIA/USDC:USDC", "SEI/USDC:USDC", "PEPE/USDC:USDC", "WIF/USDC:USDC", "JUP/USDC:USDC", "ONDO/USDC:USDC", "ENA/USDC:USDC", "PENDLE/USDC:USDC", "STX/USDC:USDC", "FET/USDC:USDC", "AAVE/USDC:USDC", "UNI/USDC:USDC", "LDO/USDC:USDC"]
-  },
-
-  "hyperliquid": {
-    "enabled": true,
-    "scan_interval": "1h",
-    "lookback_hours": 336,
-    "symbols": ["BTC", "ETH", "SOL", "BNB", "XRP", "ADA", "AVAX", "DOGE", "LINK", "DOT", "ARB", "OP", "ATOM", "SUI", "APT", "NEAR", "INJ", "TIA", "SEI", "PEPE", "WIF", "JUP", "ONDO", "ENA", "PENDLE", "STX", "FET", "AAVE", "UNI", "LDO"]
-  },
-  "monitoring": {
-    "position_refresh_interval": 30,
-    "price_cache_seconds": 30
+  "telegram": {
+    "scan_interval_minutes": 15,
+    "notify_on_scan": true,
+    "notify_on_error": true
   }
 }
