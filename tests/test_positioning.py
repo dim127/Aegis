@@ -9,6 +9,8 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+import pandas as pd
+
 import db
 from tests.dbtemp import use_temp_dbs
 import market_metrics as mm
@@ -232,3 +234,65 @@ class DownloadTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class MarketContextTests(unittest.TestCase):
+    """Observed market data attached to a setup for the reader to judge."""
+
+    def _book(self):
+        class R:
+            status_code = 200
+            def raise_for_status(self): pass
+            def json(self):
+                return {
+                    "bids": [["99.0", "10"], ["98.5", "300"], ["90.0", "9999"]],
+                    "asks": [["101.0", "20"], ["101.5", "500"], ["110.0", "9999"]],
+                }
+        return R()
+
+    def test_walls_ignore_levels_outside_the_window(self):
+        # The 90.0 and 110.0 levels are >2% away and must not be reported as
+        # nearby walls just because they are large.
+        with patch.object(mm.requests, "get", return_value=self._book()):
+            w = mm.fetch_liquidity_walls("BTC/USDT:USDT", 100.0, within_pct=2.0)
+        self.assertEqual(w["bid_wall"]["price"], 98.5)
+        self.assertEqual(w["ask_wall"]["price"], 101.5)
+
+    def test_wall_distance_is_relative_to_the_entry(self):
+        with patch.object(mm.requests, "get", return_value=self._book()):
+            w = mm.fetch_liquidity_walls("BTC/USDT:USDT", 100.0)
+        self.assertAlmostEqual(w["bid_wall"]["dist_pct"], -1.5)
+        self.assertAlmostEqual(w["ask_wall"]["dist_pct"], 1.5)
+
+    def test_bid_share_reports_which_side_is_thicker(self):
+        with patch.object(mm.requests, "get", return_value=self._book()):
+            w = mm.fetch_liquidity_walls("BTC/USDT:USDT", 100.0)
+        # 310 bid vs 520 ask within the window -> ask side dominates.
+        self.assertLess(w["bid_share"], 0.5)
+
+    def test_walls_are_none_on_a_failed_fetch(self):
+        with patch.object(mm.requests, "get", side_effect=RuntimeError("boom")):
+            self.assertIsNone(mm.fetch_liquidity_walls("BTC/USDT:USDT", 100.0))
+
+    def test_open_interest_parses_the_live_reading(self):
+        class R:
+            status_code = 200
+            def raise_for_status(self): pass
+            def json(self): return {"openInterest": "105234.29", "time": 1786096135698}
+
+        with patch.object(mm.requests, "get", return_value=R()):
+            oi = mm.fetch_open_interest("BTC/USDT:USDT")
+        self.assertAlmostEqual(oi["open_interest"], 105234.29)
+
+    def test_volume_context_compares_against_the_rolling_average(self):
+        # The rolling window includes the latest candle, matching volume_spike()
+        # in indicators.py — so a doubling reads as 1.92x, not 2.0x. Consistency
+        # with the confluence factor matters more than the rounder number.
+        df = pd.DataFrame({"Volume": [100.0] * 24 + [200.0]})
+        ctx = mm.volume_context(df, window=24)
+        self.assertAlmostEqual(ctx["average"], (23 * 100.0 + 200.0) / 24)
+        self.assertAlmostEqual(ctx["ratio"], 200.0 / ((23 * 100.0 + 200.0) / 24))
+        self.assertGreater(ctx["ratio"], 1.5)
+
+    def test_volume_context_needs_a_full_window(self):
+        self.assertIsNone(mm.volume_context(pd.DataFrame({"Volume": [1.0, 2.0]}), window=24))

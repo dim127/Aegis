@@ -54,8 +54,53 @@ def format_setup_message(setup: dict) -> str:
             lines.append(f"  {i}. {r}")
         lines.append("")
 
+    lines.extend(format_market_context(setup))
+
     lines.append(f"_Scan: {ts_str}_")
     return "\n".join(lines)
+
+
+def format_market_context(setup: dict) -> list:
+    """Observed market state around a setup.
+
+    Kept visually separate from the confluence factors: those are what fired the
+    setup, this is what helps you judge it. None of it filters anything.
+    """
+    ctx = setup.get("context") or {}
+    if not ctx:
+        return []
+
+    entry = setup.get("entry")
+    lines = ["*Konteks Pasar* _(data asli, bukan filter)_"]
+
+    if ctx.get("open_interest") is not None:
+        change = ctx.get("oi_change_24h_pct")
+        suffix = ""
+        if change is not None:
+            suffix = f" ({change:+.2f}%/24j, {'dibangun' if change > 0 else 'diurai'})"
+        lines.append(f"  • OI: {ctx['open_interest']:,.0f}{suffix}")
+
+    if ctx.get("funding_bp") is not None:
+        z = ctx.get("funding_z")
+        side = "long bayar short" if ctx["funding_bp"] > 0 else "short bayar long"
+        ztext = "" if z is None else f", z={z:+.2f}"
+        lines.append(f"  • Funding: {ctx['funding_bp']:+.3f}bp — {side}{ztext}")
+
+    if ctx.get("volume_ratio") is not None:
+        lines.append(f"  • Volume: {ctx['volume_ratio']:.2f}x rata-rata")
+
+    liq = ctx.get("liquidity") or {}
+    if liq.get("bid_share") is not None:
+        dom = "bid tebal" if liq["bid_share"] > 0.5 else "ask tebal"
+        lines.append(f"  • Order book: {liq['bid_share']*100:.0f}% bid — {dom}")
+    for key, label in (("bid_wall", "Dinding bid"), ("ask_wall", "Dinding ask")):
+        wall = liq.get(key)
+        if wall:
+            lines.append(f"    {label}: ${fmt_price(wall['price'], entry)} "
+                         f"({wall['dist_pct']:+.2f}%)")
+
+    lines.append("")
+    return lines
 
 
 def format_no_trade_message() -> str:

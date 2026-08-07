@@ -8,7 +8,10 @@ from indicators import (
     atr, detect_structure, fair_value_gaps, is_fvg_mitigated, latest_structure_event,
     is_breakout_candle, liquidity_inflection, order_block_for_event, detect_liquidity_sweep
 )
-from market_metrics import long_short_24h, estimate_liquidation_clusters
+from market_metrics import (
+    PositioningSeries, estimate_liquidation_clusters, fetch_liquidity_walls,
+    fetch_open_interest, long_short_24h, volume_context,
+)
 
 
 class AegisSMCStrategy:
@@ -400,7 +403,48 @@ class AegisSMCStrategy:
                 result["tf_ltf"] = tf_ltf
                 if best is None or self._rank(result) > self._rank(best):
                     best = result
+        if best is not None:
+            self._attach_market_context(best, df_ltf)
         return best
+
+    def _attach_market_context(self, setup: dict, df_ltf: pd.DataFrame) -> None:
+        """Attach observed market data to a valid setup, for the reader to judge.
+
+        This is deliberately *context*, not confluence: none of it gates or
+        scores the setup. Aegis reports; the decision is the reader's, and a
+        decision needs the state of the market, not just the pattern that fired.
+
+        Only called once a setup is valid — 21 pair/combo evaluations per scan
+        would otherwise burn the REST budget on order book snapshots nobody
+        reads.
+        """
+        symbol = setup["pair"]
+        context: dict = {}
+
+        oi_now = fetch_open_interest(symbol)
+        if oi_now:
+            context["open_interest"] = oi_now["open_interest"]
+            series = PositioningSeries(symbol, "open_interest", "4h")
+            if len(series):
+                context["oi_change_24h_pct"] = series.change_pct(
+                    int(pd.Timestamp.now(tz="UTC").timestamp() * 1000), 24 * 3600 * 1000
+                )
+
+        funding = PositioningSeries(symbol, "funding_rate", "8h")
+        if len(funding):
+            now_ms = int(pd.Timestamp.now(tz="UTC").timestamp() * 1000)
+            context["funding_bp"] = funding.as_of(now_ms)
+            context["funding_z"] = funding.zscore_as_of(now_ms)
+
+        volume = volume_context(df_ltf)
+        if volume:
+            context["volume_ratio"] = volume["ratio"]
+
+        walls = fetch_liquidity_walls(symbol, setup["entry"])
+        if walls:
+            context["liquidity"] = walls
+
+        setup["context"] = context
 
     @staticmethod
     def _rank(setup: dict) -> tuple:

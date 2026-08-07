@@ -246,6 +246,94 @@ class PositioningSeries:
         return (now - then) / then * 100.0
 
 
+FAPI_BASE = "https://fapi.binance.com/fapi/v1"
+
+
+def fetch_open_interest(symbol: str) -> Optional[dict]:
+    """Current open interest in contracts. Real exchange data, no API key."""
+    try:
+        r = requests.get(f"{FAPI_BASE}/openInterest",
+                         params={"symbol": symbol_to_binance(symbol)}, timeout=FAPI_TIMEOUT)
+        r.raise_for_status()
+        data = r.json()
+        return {"open_interest": float(data["openInterest"]), "time": int(data["time"])}
+    except Exception as e:
+        logger.error(f"Open interest fetch failed for {symbol}: {e}")
+        return None
+
+
+def fetch_liquidity_walls(symbol: str, reference_price: float,
+                          within_pct: float = 2.0, limit: int = 500) -> Optional[dict]:
+    """Largest resting bid/ask clusters near price, from the live order book.
+
+    This is real posted liquidity — orders that actually exist — as opposed to
+    the liquidation-cluster estimate below, which infers where stops *might* be
+    from a volume profile. Walls are where price demonstrably has to absorb
+    size, which is the more honest input to a discretionary decision.
+
+    Live only: the order book has no history, so this informs a decision now
+    and can never be backtested. It is reported as context, never as a gate.
+    """
+    if reference_price <= 0:
+        return None
+    try:
+        r = requests.get(f"{FAPI_BASE}/depth",
+                         params={"symbol": symbol_to_binance(symbol), "limit": limit},
+                         timeout=FAPI_TIMEOUT)
+        r.raise_for_status()
+        book = r.json()
+    except Exception as e:
+        logger.error(f"Order book fetch failed for {symbol}: {e}")
+        return None
+
+    span = reference_price * within_pct / 100.0
+
+    def biggest(levels, side):
+        near = [(float(p), float(q)) for p, q in levels
+                if abs(float(p) - reference_price) <= span]
+        if not near:
+            return None
+        total = sum(q for _, q in near)
+        price, qty = max(near, key=lambda x: x[1])
+        return {
+            "price": price,
+            "qty": qty,
+            "notional": price * qty,
+            "share_of_side": qty / total if total else 0.0,
+            "dist_pct": (price - reference_price) / reference_price * 100.0,
+            "side": side,
+        }
+
+    bid_wall = biggest(book.get("bids", []), "bid")
+    ask_wall = biggest(book.get("asks", []), "ask")
+    bid_vol = sum(float(q) for p, q in book.get("bids", [])
+                  if abs(float(p) - reference_price) <= span)
+    ask_vol = sum(float(q) for p, q in book.get("asks", [])
+                  if abs(float(p) - reference_price) <= span)
+    total = bid_vol + ask_vol
+    return {
+        "bid_wall": bid_wall,
+        "ask_wall": ask_wall,
+        "bid_volume": bid_vol,
+        "ask_volume": ask_vol,
+        # >0.5 means more resting size below price than above.
+        "bid_share": (bid_vol / total) if total else None,
+        "within_pct": within_pct,
+    }
+
+
+def volume_context(df: pd.DataFrame, window: int = 24) -> Optional[dict]:
+    """Latest candle volume against its recent average. Real OHLCV, no network."""
+    if df is None or len(df) < window + 1:
+        return None
+    volumes = df["Volume"].astype(float)
+    average = float(volumes.rolling(window).mean().iloc[-1])
+    latest = float(volumes.iloc[-1])
+    if not average or np.isnan(average):
+        return None
+    return {"latest": latest, "average": average, "ratio": latest / average}
+
+
 def _strength_label(density: float, density_max: float) -> str:
     if density_max <= 0:
         return "weak"
@@ -257,13 +345,20 @@ def _strength_label(density: float, density_max: float) -> str:
 
 
 def estimate_liquidation_clusters(df: pd.DataFrame, leverage: float = 10.0) -> Optional[dict]:
-    """Estimate liquidation clusters from a volume-at-price exposure profile.
+    """ESTIMATE liquidation clusters from a volume-at-price exposure profile.
 
-    Each candle's volume is treated as positions entered across its price range.
-    Long positions get liquidated below their entry price (entry / leverage),
-    shorts above theirs. Several leverage buckets (5x/10x/20x/50x) are blended so
-    clusters appear near and far from price. The aggregated density is binned
-    and the nearest local maxima above and below the current price are returned.
+    This is inferred, not observed. Binance does not serve market-wide
+    liquidation history without an API key (/fapi/v1/forceOrders returns 401,
+    /fapi/v1/allForceOrders is gone), so there is no real heatmap to read.
+
+    The model assumes each candle's volume is positions entered across its price
+    range, liquidated at entry/leverage for longs and entry*leverage for shorts,
+    blended over 5x/10x/20x/50x. Every one of those assumptions is a guess: real
+    traders do not enter uniformly across a candle, and their leverage is
+    unknown. Treat the output as a hypothesis about where stops might sit.
+
+    For actually-observed liquidity near price, use fetch_liquidity_walls(),
+    which reads real resting orders from the book.
     """
     if df is None or len(df) < 60:
         return None
