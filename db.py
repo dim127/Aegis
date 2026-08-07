@@ -9,38 +9,15 @@ from typing import Optional
 DB_DIR = os.path.join(os.path.dirname(__file__), "data")
 DB_PATH = os.path.join(DB_DIR, "aegis_cache.db")
 SIGNALS_DB_PATH = os.path.join(os.path.dirname(__file__), "aegis_signals.db")
-TESTNET_DB_PATH = os.path.join(DB_DIR, "aegis_cache_testnet.db")
-TESTNET_SIGNALS_PATH = os.path.join(os.path.dirname(__file__), "aegis_signals_testnet.db")
-DEMO_DB_PATH = os.path.join(DB_DIR, "aegis_cache_demo.db")
-DEMO_SIGNALS_PATH = os.path.join(os.path.dirname(__file__), "aegis_signals_demo.db")
-
-
-def _trading_mode() -> str:
-    try:
-        from execution import trading_mode
-        return trading_mode()
-    except Exception:
-        return "live"
-
-
-def _testnet_mode() -> bool:
-    """Kept for callers that only care whether this is a paper environment."""
-    return _trading_mode() != "live"
 
 
 def _active_paths() -> tuple[str, str]:
-    """Return (cache_db_path, signals_db_path) for the current mode.
+    """Return (cache_db_path, signals_db_path).
 
-    Each environment gets its own files. Testnet and demo are different
-    exchanges with different fills, so blending their journals would make any
-    realised-R summary meaningless — and neither belongs in the live journal.
+    There is a single set of databases: Aegis reads public data and records the
+    signals it produced, so there are no per-account environments to keep apart.
     Module attributes are read at call time so tests can redirect them.
     """
-    mode = _trading_mode()
-    if mode == "testnet":
-        return TESTNET_DB_PATH, TESTNET_SIGNALS_PATH
-    if mode == "demo":
-        return DEMO_DB_PATH, DEMO_SIGNALS_PATH
     return DB_PATH, SIGNALS_DB_PATH
 
 
@@ -78,8 +55,7 @@ def _ensure_db(cache_db: str):  # type: ignore[no-untyped-def]
             sl REAL,
             tp REAL,
             rr REAL,
-            status TEXT DEFAULT 'PENDING',
-            order_id TEXT
+            status TEXT DEFAULT 'PENDING'
         )
     """)
     conn.execute("""
@@ -108,10 +84,9 @@ def _ensure_db(cache_db: str):  # type: ignore[no-untyped-def]
     conn.commit()
     # Idempotent migrations: SQLite has no ADD COLUMN IF NOT EXISTS, so each is
     # attempted and the "duplicate column name" error swallowed.
+    # Outcome columns: a signal is only as good as what happened next, so the
+    # journal records whether the entry was reached and how it resolved.
     for column in (
-        "order_id TEXT",
-        "sl_order_id TEXT",
-        "tp_order_id TEXT",
         "fill_price REAL",
         "fill_time TEXT",
         "exit_price REAL",
@@ -322,13 +297,13 @@ def fetch_trade_journal(status: str = "PENDING") -> list[dict]:
     conn = sqlite3.connect(cache_db)
     rows = conn.execute(
         "SELECT id, timestamp, pair, tf_combo, direction, entry_price, sl, tp, rr, "
-        "status, order_id, sl_order_id, tp_order_id, fill_price "
+        "status, fill_price, exit_price, exit_reason, realized_r "
         "FROM trade_journal WHERE status = ? ORDER BY id ASC",
         (status,),
     ).fetchall()
     conn.close()
     columns = ["id", "timestamp", "pair", "tf_combo", "direction", "entry", "sl", "tp",
-               "rr", "status", "order_id", "sl_order_id", "tp_order_id", "fill_price"]
+               "rr", "status", "fill_price", "exit_price", "exit_reason", "realized_r"]
     return [dict(zip(columns, row)) for row in rows]
 
 
@@ -414,21 +389,8 @@ def positioning_coverage(symbol: str, metric: str, period: str) -> dict:
     return {"rows": row[0] or 0, "first": row[1], "last": row[2]}
 
 
-def record_stop_orders(trade_id: int, sl_order_id: str | None, tp_order_id: str | None):
-    """Persist the protective order ids so they can be cancelled later."""
-    cache_db, _ = _active_paths()
-    _ensure_db(cache_db)
-    conn = sqlite3.connect(cache_db)
-    conn.execute(
-        "UPDATE trade_journal SET sl_order_id = ?, tp_order_id = ? WHERE id = ?",
-        (sl_order_id, tp_order_id, trade_id),
-    )
-    conn.commit()
-    conn.close()
-
-
 def record_fill(trade_id: int, fill_price: float, fill_time: str | None = None):
-    """Store the actual entry fill (may differ from the intended limit price)."""
+    """Record that price reached the signal's entry, and at what level."""
     cache_db, _ = _active_paths()
     _ensure_db(cache_db)
     fill_time = fill_time or datetime.now(timezone.utc).isoformat()
@@ -501,19 +463,11 @@ def performance_summary() -> dict:
     }
 
 
-def update_trade_status(trade_id: int, status: str, order_id: str | None = None):
+def update_trade_status(trade_id: int, status: str):
+    """Move a signal through PENDING -> TRIGGERED -> CLOSED / EXPIRED."""
     cache_db, _ = _active_paths()
     _ensure_db(cache_db)
     conn = sqlite3.connect(cache_db)
-    if order_id is not None:
-        conn.execute(
-            "UPDATE trade_journal SET status = ?, order_id = ? WHERE id = ?",
-            (status, order_id, trade_id),
-        )
-    else:
-        conn.execute(
-            "UPDATE trade_journal SET status = ? WHERE id = ?",
-            (status, trade_id),
-        )
+    conn.execute("UPDATE trade_journal SET status = ? WHERE id = ?", (status, trade_id))
     conn.commit()
     conn.close()

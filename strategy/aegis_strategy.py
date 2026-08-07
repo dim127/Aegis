@@ -27,14 +27,11 @@ class AegisSMCStrategy:
 
     def __init__(self, exchange=None, config: dict | None = None):
         if exchange is None:
-            from execution import is_testnet
             exchange = ccxt.binanceusdm({
                 "enableRateLimit": True,
                 "timeout": 20000,
                 "options": {"defaultType": "future"},
             })
-            if is_testnet():
-                exchange.set_sandbox_mode(True)
         self.exchange = exchange
         config = config if config is not None else self._load_config()
         smc_config = config.get("smc", {})

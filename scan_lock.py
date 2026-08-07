@@ -1,15 +1,13 @@
-"""Shared single-instance locks.
+"""Single-instance lock.
 
-The scan lock keeps aegis_bot.py and poll_scanner.py from scanning at the same
-time. The trade lock keeps two trade_manager processes from reading the same
-PENDING rows and both placing an order.
+Keeps aegis_bot.py and poll_scanner.py from scanning at the same time, so one
+setup is not journalled twice and the REST budget is not spent twice over.
 """
 import fcntl
 import os
 
 _DIR = os.path.dirname(os.path.abspath(__file__))
 LOCK_PATH = os.path.join(_DIR, ".aegis_scan.lock")
-TRADE_LOCK_PATH = os.path.join(_DIR, ".aegis_trade.lock")
 
 
 class ScanLock:

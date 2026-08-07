@@ -13,15 +13,14 @@ fi
 
 usage() {
     cat <<'EOF'
-Aegis V4 — shortcut commands
+Aegis V4 — SMC signal scanner (tidak mengeksekusi order)
 
   ./aegis.sh scan               Full SMC scan (7 pair × 3 combo)
   ./aegis.sh poll               Polling scanner (60 detik, pakai lock)
   ./aegis.sh bot                Telegram bot (pakai lock sama)
-  ./aegis.sh trade [args]       trade_manager.py (contoh: --once, --interval 60)
-  ./aegis.sh status             Status trade aktif dari journal
-  ./aegis.sh positions          Posisi terbuka di Binance futures
+  ./aegis.sh status             Sinyal aktif vs harga sekarang
   ./aegis.sh backtest [days=30] Download → scan → simulate → report
+  ./aegis.sh edge [days=30]     Uji apakah tiap faktor benar-benar punya edge
   ./aegis.sh test               Jalankan seluruh unit test
   ./aegis.sh help               Tampilkan daftar ini
 EOF
@@ -35,9 +34,8 @@ case "${1:-}" in
     scan)      run analysis/scan_smc.py ;;
     poll)      run poll_scanner.py ;;
     bot)       run aegis_bot.py ;;
-    trade)     shift; run trade_manager.py "$@" ;;
     status)    run check_status.py ;;
-    positions) run check_all_positions_latest.py ;;
+    edge)      run analysis/backtest/factor_edge.py --days "${2:-30}" ;;
     backtest)
         days="${2:-30}"
         run analysis/backtest/download_history.py --days "$days" || exit 1

@@ -1,8 +1,17 @@
-# Aegis V4 — Pure SMC Strategy
+# Aegis V4 — SMC Signal Scanner
 
 ## Overview
-Aegis V4 adalah crypto trading bot berbasis **Smart Money Concepts (SMC)** murni.  
-Tidak ada scoring system, tidak ada threshold buatan — hanya **price action + market structure**.
+Aegis V4 adalah **pemberi sinyal** crypto berbasis **Smart Money Concepts (SMC)**.
+Ia memindai setup dan melaporkannya — **tidak pernah mengeksekusi order**.
+
+> ### Tidak ada eksekusi order
+> Aegis hanya membaca **data publik** Binance. Tidak ada API key, tidak ada
+> kredensial di disk, tidak ada jalur kode yang bisa menyentuh akun — bahkan
+> secara tidak sengaja. Ini properti yang **disengaja**, bukan fitur yang belum
+> dibuat: jalur eksekusi paling aman adalah yang tidak ada.
+>
+> Aegis memberi **informasi**, bukan perintah. Keputusan entry, sizing, dan
+> eksekusi sepenuhnya di tangan Anda.
 
 ## Core Philosophy
 | Aturan | Deskripsi |
@@ -184,36 +193,6 @@ tidak ada swing terkonfirmasi di window.
 `latest_structure_event` dibatasi `max_bars_back=30`: tanpa itu, break 4h dari >2 minggu lalu
 masih bisa meloloskan entry live.
 
-## Risk Management
-| Parameter | Value |
-|-----------|-------|
-| RR Target | 1:3 (`smc.rr_target`, tidak boleh < 3.0) |
-| SL | Di belakang swing point terdekat (liquidity inflection) + **1.5× ATR Buffer** |
-| TP | 3× risk dari entry |
-| Position | Limit order di FVG midpoint |
-| Harga | Di-snap ke **tick size exchange** (`price_to_precision`), bukan `round(x, 2)` |
-| **Min stop distance** | Stop wajib ≥ `min_cost_multiple` × biaya round-trip (default 8 × 0.08% = **0.64%**). Setup dengan stop lebih rapat ditolak — fee memakan sebagian besar 1R |
-| Risk per trade | `risk.risk_percent` dari equity akun (fallback `risk.capital`); **leverage tidak mengalikan risk** |
-| Notional cap | `risk.max_notional_pct` (default 300% dari capital) |
-| Fill window | Limit order dibatalkan setelah `fill_window_minutes` (default 60) |
-| **Signal TTL** | Sinyal PENDING lebih tua dari `signal_ttl_minutes` (default 15) di-EXPIRED, tidak di-place |
-| One position per pair | Satu posisi per pair; sinyal baru di-skip selama masih ada trade PLACED/OPEN di pair yang sama |
-| Max concurrent | `risk.max_concurrent_positions` (default 3) — 7 major sangat berkorelasi |
-| Kill switch | `risk.enabled: false` menghentikan semua placement (monitoring tetap jalan) |
-
-### Cost model (`risk.costs`)
-Round-trip = `maker_fee_pct` (limit entry) + `taker_fee_pct` (STOP_MARKET exit) + `slippage_pct`.
-Default 0.02 + 0.04 + 0.02 = **0.08%**. Setiap setup melaporkan `rr_net` — RR setelah biaya.
-
-> Dari 28 sinyal historis, **16 (57%) ditolak** gate ini — hampir semuanya combo 15m/1m
-> dengan stop 0.08%–0.27%, di mana fee memakan 30–100% dari 1R.
-
-## Outcome tracking
-`trade_journal` menyimpan hasil nyata, bukan hanya niat:
-`fill_price`, `fill_time`, `exit_price`, `exit_time`, `exit_reason`, `fees_paid`, `realized_r`,
-plus `sl_order_id` / `tp_order_id` agar stop yang tersisa bisa di-cancel.
-`db.performance_summary()` → win rate, expectancy R, total R. Tampil di `/status` dan `./aegis.sh status`.
-
 ## Pairs
 Binance USDT-M futures (via CCXT `binanceusdm`):
 - BTC/USDT:USDT
@@ -233,17 +212,15 @@ aegis/
 │   └── backtest/            # scan_history, simulate, report, download_history
 ├── strategy/aegis_strategy.py  # SMC strategy class
 ├── indicators.py            # SMC indicator functions (CHOCH, FVG, OB, BOS, etc.)
-├── market_metrics.py        # Long/Short 24h + estimasi liquidation cluster
-├── execution.py             # Order execution via CCXT (Binance futures)
-├── trade_manager.py         # Place + monitor limit/SL/TP dari journal
+├── market_metrics.py        # Long/Short, open interest, funding, liquidation cluster
+├── execution.py             # Data pasar PUBLIK via CCXT — tanpa API key, tanpa order
 ├── scan_lock.py             # Single-instance lock (bot vs poll_scanner)
-├── binance_credentials.json # Isi API key/secret Binance mainnet (tidak di-git)
-├── binance_testnet_credentials.json  # API key/secret Binance Testnet (tidak di-git)
-├── db.py                    # OHLCV cache + signals & trade journal
+├── db.py                    # OHLCV cache + signals + positioning history
+├── check_status.py          # Sinyal aktif vs harga sekarang
 ├── poll_scanner.py          # Polling scanner (60 detik, pakai lock)
 ├── aegis_bot.py             # Telegram bot (pakai lock sama)
-├── journals/                # Trading journal
-└── aegis_config.json        # Exchange & SMC config
+├── journals/                # Trading journal manual
+└── aegis_config.json        # SMC config (tidak ada kredensial)
 ```
 
 ## Commands
@@ -252,23 +229,14 @@ aegis/
 ./aegis.sh scan               # Full scan
 ./aegis.sh poll               # Polling scanner
 ./aegis.sh bot                # Telegram bot
-./aegis.sh trade --once       # Eksekusi journal
-./aegis.sh status             # Status trade aktif
-./aegis.sh positions          # Posisi di exchange
-./aegis.sh backtest --days 30 # Backtest penuh
+./aegis.sh status             # Sinyal aktif vs harga sekarang
+./aegis.sh backtest 30        # Backtest penuh
+./aegis.sh edge 30            # Uji apakah tiap faktor punya edge
 ./aegis.sh test               # Unit tests
 
-# Isi API key Binance (opsional, hanya untuk eksekusi order)
-# → isi .env (BINANCE_API_KEY / BINANCE_SECRET_KEY) ATAU binance_credentials.json,
-#   tidak perlu sentuh aegis_config.json
-
-# MODE TESTNET (uji eksekusi, uang palsu, data terpisah):
-# 1. Buat key di https://testnet.binancefuture.com → isi .env
-#    (BINANCE_TESTNET_API_KEY / BINANCE_TESTNET_SECRET) ATAU binance_testnet_credentials.json
-# 2. Set exchange.binance.testnet = true di aegis_config.json
-# 3. Semua data otomatis pindah ke aegis_cache_testnet.db + aegis_signals_testnet.db
-#    (harga testnet adalah simulasi — hasil scan beda dari live)
-# 4. Kembalikan flag ke false untuk kembali ke mainnet
+# TIDAK PERLU API KEY. Semua data yang dipakai Aegis bersifat publik.
+# Kalau ada yang menyuruh mengisi kredensial untuk menjalankan scanner,
+# itu keliru — scanner tidak punya jalur kode untuk menyentuh akun.
 
 # Full SMC scan (7 pair × 3 combo: 15m/1m, 1h/5m, 4h/15m)
 ./venv/bin/python3 analysis/scan_smc.py
@@ -284,32 +252,32 @@ aegis/
 ./venv/bin/python3 analysis/backtest/scan_history.py --days 30
 ./venv/bin/python3 analysis/backtest/simulate.py --days 30
 
-# Eksekusi order dari journal (perlu API key Binance di config)
-./venv/bin/python3 trade_manager.py --once
+# Data posisi pasar (long/short, open interest, funding)
+./venv/bin/python3 analysis/backtest/download_positioning.py --period 4h --open-interest --funding
 ```
 
-## Execution Flow
-1. Scanner (`scan_smc.py` / bot / poll_scanner) → journal ke `aegis_signals.db` + antrian `trade_journal` (status PENDING)
-   - Mode testnet: journal ke `aegis_signals_testnet.db` / `trade_journal` di `aegis_cache_testnet.db`
-   - Dedup pakai identitas setup (pair + tf_combo + direction), **bukan** entry price — entry adalah
-     FVG midpoint yang bergeser tiap scan
-2. `reconcile()` saat startup → adopsi order yatim di exchange kalau proses mati saat placement
-3. `trade_manager.py` → place limit entry, status PENDING → PLACED
-4. Saat entry terisi → PLACED → OPEN, `fill_price` dicatat, **baru** SL/TP stop dipasang
-   (stop reduce-only yang dipasang sebelum fill akan yatim kalau entry expired)
-5. Position ditutup oleh SL/TP → stop sisanya di-cancel, `exit_price` + `realized_r` dicatat, status CLOSED
-6. Tanpa API key Binance, journal tetap tercatat dan trade_manager hanya log (dormant)
-
-**Safety:** `trade_manager` menolak jalan di mainnet tanpa flag `--live`, dan memegang lock
-`.aegis_trade.lock` supaya dua proses tidak place order dari row PENDING yang sama.
-
 ## Don'ts
-- **JANGAN** menambah indikator (RSI, MACD, EMA, Bollinger, dll) — SMC murni.
+- **JANGAN** menambahkan eksekusi order dalam bentuk apa pun — tidak ada penempatan
+  order, tidak ada API key, tidak ada mode paper. Aegis memberi informasi, titik.
+  Kalau eksekusi otomatis diinginkan lagi, itu keputusan sadar pemiliknya, bukan
+  sesuatu yang muncul diam-diam dari sebuah PR.
 - **JANGAN** membuat "scoring" atau threshold buatan **tanpa bukti backtest**.
-  Gate biaya (min stop distance) adalah kontrol *risk*, bukan scoring: dia menolak setup yang
-  secara matematis tidak bisa profit setelah fee, bukan menebak arah.
-- **JANGAN** market entry — selalu limit order di FVG.
-- **JANGAN** mengubah RR target < 1:3.
-- **JANGAN** menyentuh file `.env` atau credential.
-- **JANGAN** trailing atau partial exit — hold to SL/TP.
+  Gate biaya (min stop distance) adalah kontrol *kualitas sinyal*, bukan scoring:
+  dia menolak setup yang secara matematis tidak bisa profit setelah fee.
+- **JANGAN** mengubah RR target < 1:3 tanpa data yang mendukung.
+- **JANGAN** menonaktifkan verifikasi SSL (`verify=False`) untuk "memperbaiki" error
+  koneksi. Error sertifikat pernah terjadi karena DNS dibajak Internet Positif —
+  mematikan verifikasi justru mengirim data ke server pemfilter.
 - **JANGAN** menjalankan `aegis_bot.py` dan `poll_scanner.py` bersamaan (pakai lock `.aegis_scan.lock`).
+
+## Status kejujuran
+
+Backtest terakhir (n=79, 30 hari, kombo 4h/15m + 1h/5m): **win rate 17.7%,
+expectancy −0.291R**. Sapuan RR menunjukkan **tidak ada** target yang profitable,
+dan pada RR 1.0 win rate 47.6% — praktis tidak bisa dibedakan dari lemparan koin.
+Skor confluence juga tidak memisahkan menang dari kalah (p=1.000).
+
+Artinya: **sinyal Aegis belum terbukti punya edge.** Perlakukan keluarannya sebagai
+kandidat untuk dianalisis sendiri, bukan rekomendasi. Jalankan `./aegis.sh edge`
+setiap kali menambah faktor baru — dan percayai hasilnya, termasuk saat hasilnya
+mengatakan ide Anda tidak berguna.
