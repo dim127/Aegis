@@ -9,10 +9,13 @@ import execution
 
 
 class IsTestnetTests(unittest.TestCase):
-    def test_false_by_default(self):
+    def test_false_when_flag_absent(self):
+        # Both assertions must sit inside the patch. environment_name() used to
+        # be called outside it, so this test read whichever mode the checked-in
+        # aegis_config.json happened to be in.
         with patch("execution._load_config", return_value={"exchange": {"binance": {}}}):
             self.assertFalse(execution.is_testnet())
-        self.assertEqual(execution.environment_name(), "LIVE")
+            self.assertEqual(execution.environment_name(), "LIVE")
 
     def test_true_when_flag_set(self):
         with patch("execution._load_config", return_value={"exchange": {"binance": {"testnet": True}}}):
@@ -27,10 +30,22 @@ class SandboxModeTests(unittest.TestCase):
         fapi = exchange.urls["api"]["fapiPublic"]
         self.assertIn("testnet", fapi, f"expected testnet fapi url, got {fapi}")
 
-    def test_exchange_live_by_default(self):
-        exchange = execution._create_exchange()
+    def test_exchange_stays_live_when_flag_off(self):
+        execution.reset_exchange_cache()
+        with patch("execution.is_testnet", return_value=False):
+            exchange = execution._create_exchange()
         fapi = exchange.urls["api"]["fapiPublic"]
         self.assertNotIn("testnet", fapi, f"expected live fapi url, got {fapi}")
+
+    def test_sandbox_disables_the_ccxt_futures_guard(self):
+        # ccxt raises NotSupported on every private futures endpoint while
+        # sandbox mode is on. The URLs still route to the testnet host, so the
+        # guard is opted out of rather than worked around.
+        execution.reset_exchange_cache()
+        with patch("execution.is_testnet", return_value=True):
+            exchange = execution._create_exchange()
+        self.assertTrue(exchange.options.get("disableFuturesSandboxWarning"))
+        self.assertIn("testnet", exchange.urls["api"]["fapiPrivate"])
 
 
 class TestnetCredentialsTests(unittest.TestCase):
@@ -81,8 +96,9 @@ class TestnetDbIsolationTests(unittest.TestCase):
         db.TESTNET_DB_PATH = os.path.join(self.tmp, "testnet_cache.db")
         db.TESTNET_SIGNALS_PATH = os.path.join(self.tmp, "testnet_signals.db")
 
-    def test_live_paths_by_default(self):
-        self.assertEqual(db._active_paths(), (db.DB_PATH, db.SIGNALS_DB_PATH))
+    def test_live_paths_when_flag_off(self):
+        with patch("execution.is_testnet", return_value=False):
+            self.assertEqual(db._active_paths(), (db.DB_PATH, db.SIGNALS_DB_PATH))
 
     def test_testnet_paths_when_flag_set(self):
         with patch("execution.is_testnet", return_value=True):
@@ -106,16 +122,17 @@ class TestnetDbIsolationTests(unittest.TestCase):
         self.assertFalse(os.path.exists(live), "live db must stay untouched")
 
     def test_live_journal_does_not_touch_testnet_db(self):
-        db.log_signal({
-            "pair": "ETH/USDT:USDT",
-            "tf_combo": "1h/5m",
-            "direction": "short",
-            "entry": 2000.0,
-            "sl": 2050.0,
-            "tp": 1850.0,
-            "rr": 3.0,
-        })
-        self.assertEqual(len(db.fetch_trade_journal("PENDING")), 1)
+        with patch("execution.is_testnet", return_value=False):
+            db.log_signal({
+                "pair": "ETH/USDT:USDT",
+                "tf_combo": "1h/5m",
+                "direction": "short",
+                "entry": 2000.0,
+                "sl": 2050.0,
+                "tp": 1850.0,
+                "rr": 3.0,
+            })
+            self.assertEqual(len(db.fetch_trade_journal("PENDING")), 1)
         self.assertFalse(os.path.exists(db.TESTNET_DB_PATH))
 
 

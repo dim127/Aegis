@@ -121,6 +121,14 @@ def _create_exchange(
         exchange.options.update(cfg["options"])
     if testnet:
         exchange.set_sandbox_mode(True)
+        # ccxt raises NotSupported on every *private* futures endpoint while
+        # sandbox mode is on (binance.py: the fapiPrivate branch), because
+        # Binance deprecated the futures testnet in favour of demo trading.
+        # Public endpoints are unaffected, which is why prices worked while
+        # fetch_balance and fetch_positions did not. The URLs still route to
+        # testnet.binancefuture.com and the endpoints still respond, so this
+        # opts out of the guard rather than working around it.
+        exchange.options["disableFuturesSandboxWarning"] = True
         logger.info("Exchange in SANDBOX/TESTNET mode (testnet.binancefuture.com)")
     _EXCHANGE_CACHE[cache_key] = exchange
     return exchange

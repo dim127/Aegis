@@ -10,6 +10,7 @@ import unittest
 from unittest.mock import patch
 
 import db
+from tests.dbtemp import use_temp_dbs
 import market_metrics as mm
 
 
@@ -43,9 +44,7 @@ class SourceSelectionTests(unittest.TestCase):
 
 class PositioningSeriesTests(unittest.TestCase):
     def setUp(self):
-        tmp = tempfile.mkdtemp()
-        db.DB_PATH = os.path.join(tmp, "t.db")
-        db.SIGNALS_DB_PATH = os.path.join(tmp, "s.db")
+        use_temp_dbs()
         self.rows = [
             {"timestamp": 1_000_000, "value": 55.0},
             {"timestamp": 2_000_000, "value": 60.0},
@@ -106,9 +105,7 @@ class PositioningSeriesTests(unittest.TestCase):
 
 class OpenInterestTests(unittest.TestCase):
     def setUp(self):
-        tmp = tempfile.mkdtemp()
-        db.DB_PATH = os.path.join(tmp, "t.db")
-        db.SIGNALS_DB_PATH = os.path.join(tmp, "s.db")
+        use_temp_dbs()
         hour = 3_600_000
         db.save_positioning_history("BTC/USDT:USDT", "open_interest", "4h", [
             {"timestamp": 10 * hour, "value": 100_000.0},
@@ -158,9 +155,7 @@ class OpenInterestTests(unittest.TestCase):
 
 class FundingZScoreTests(unittest.TestCase):
     def setUp(self):
-        tmp = tempfile.mkdtemp()
-        db.DB_PATH = os.path.join(tmp, "t.db")
-        db.SIGNALS_DB_PATH = os.path.join(tmp, "s.db")
+        use_temp_dbs()
 
     def _series(self, values):
         db.save_positioning_history("BTC/USDT:USDT", "funding_rate", "8h", [
@@ -214,9 +209,7 @@ class FundingZScoreTests(unittest.TestCase):
 
 class DownloadTests(unittest.TestCase):
     def setUp(self):
-        tmp = tempfile.mkdtemp()
-        db.DB_PATH = os.path.join(tmp, "t.db")
-        db.SIGNALS_DB_PATH = os.path.join(tmp, "s.db")
+        use_temp_dbs()
 
     def test_download_persists_long_share_as_percent(self):
         payload = [

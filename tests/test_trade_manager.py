@@ -4,14 +4,13 @@ import unittest
 from unittest.mock import patch
 
 import db
+from tests.dbtemp import use_temp_dbs
 import trade_manager
 
 
 class OnePositionPerPairTests(unittest.TestCase):
     def setUp(self):
-        tmp = tempfile.mkdtemp()
-        db.DB_PATH = os.path.join(tmp, "t.db")
-        db.SIGNALS_DB_PATH = os.path.join(tmp, "s.db")
+        use_temp_dbs()
         self._order = {"id": "o1"}
 
     def _journal(self, pair, direction="long", entry=100.0):

@@ -5,7 +5,7 @@
     "rate_limit": true,
     "binance": {
       "enabled": true,
-      "testnet": false,
+      "testnet": true,
       "api_key": "",
       "api_secret": ""
     }

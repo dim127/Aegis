@@ -12,6 +12,7 @@ from unittest.mock import patch
 import pandas as pd
 
 import db
+from tests.dbtemp import use_temp_dbs
 import execution
 import trade_manager
 from strategy.aegis_strategy import AegisSMCStrategy
@@ -138,9 +139,7 @@ class TickQuantizationTests(unittest.TestCase):
 
 class MonitorPlacedTests(unittest.TestCase):
     def setUp(self):
-        tmp = tempfile.mkdtemp()
-        db.DB_PATH = os.path.join(tmp, "t.db")
-        db.SIGNALS_DB_PATH = os.path.join(tmp, "s.db")
+        use_temp_dbs()
         db.log_signal({
             "pair": "BTC/USDT:USDT", "tf_combo": "15m/1m", "direction": "long",
             "entry": 100.0, "sl": 95.0, "tp": 115.0, "rr": 3.0,
@@ -200,9 +199,7 @@ class MonitorPlacedTests(unittest.TestCase):
 
 class MonitorOpenTests(unittest.TestCase):
     def setUp(self):
-        tmp = tempfile.mkdtemp()
-        db.DB_PATH = os.path.join(tmp, "t.db")
-        db.SIGNALS_DB_PATH = os.path.join(tmp, "s.db")
+        use_temp_dbs()
         db.log_signal({
             "pair": "BTC/USDT:USDT", "tf_combo": "15m/1m", "direction": "long",
             "entry": 100.0, "sl": 95.0, "tp": 115.0, "rr": 3.0,
@@ -269,9 +266,7 @@ class MonitorOpenTests(unittest.TestCase):
 
 class StaleSignalTests(unittest.TestCase):
     def setUp(self):
-        tmp = tempfile.mkdtemp()
-        db.DB_PATH = os.path.join(tmp, "t.db")
-        db.SIGNALS_DB_PATH = os.path.join(tmp, "s.db")
+        use_temp_dbs()
 
     def test_signal_older_than_ttl_is_expired_not_placed(self):
         db.log_signal({
@@ -280,7 +275,9 @@ class StaleSignalTests(unittest.TestCase):
         })
         old = (pd.Timestamp.now(tz="UTC") - pd.Timedelta(hours=13)).strftime("%Y-%m-%d %H:%M:%S")
         import sqlite3
-        conn = sqlite3.connect(db.DB_PATH)
+        # Must follow _active_paths, not DB_PATH: which file the journal lives in
+        # depends on whether testnet mode is on.
+        conn = sqlite3.connect(db._active_paths()[0])
         conn.execute("UPDATE trade_journal SET timestamp = ? WHERE id = 1", (old,))
         conn.commit()
         conn.close()
