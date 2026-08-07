@@ -126,27 +126,30 @@ def format_status_message() -> str:
         "\U0001f4ca *Aegis V4 \u2014 Status*",
         "",
     ]
-    trades = db.fetch_trade_journal("PLACED") + db.fetch_trade_journal("OPEN")
-    if trades:
-        lines.append(f"*Active Trades:* {len(trades)}")
-        for t in trades:
-            side = "LONG" if t.get("direction") == "long" else "SHORT"
-            sym = t.get("pair", "?")
-            entry = t.get("entry")
-            sl = t.get("sl")
+    # PENDING/TRIGGERED, not PLACED/OPEN — those were order statuses and no
+    # longer exist, so this silently reported "none" however many signals were
+    # live.
+    signals = db.fetch_trade_journal("PENDING") + db.fetch_trade_journal("TRIGGERED")
+    if signals:
+        lines.append(f"*Sinyal aktif:* {len(signals)}")
+        for s in signals:
+            side = "LONG" if s.get("direction") == "long" else "SHORT"
+            entry = s.get("entry")
+            sl = s.get("sl")
             entry_str = f" @ ${fmt_price(entry)}" if entry else ""
-            sl_str = f" SL ${fmt_price(sl)}" if sl else ""
-            lines.append(f"  {side} {sym} [{t.get('status', '?')}]{entry_str}{sl_str}")
+            sl_str = f" SL ${fmt_price(sl, entry)}" if sl else ""
+            lines.append(f"  {side} {s.get('pair', '?')} "
+                         f"[{s.get('tf_combo', '?')}]{entry_str}{sl_str}")
     else:
-        lines.append("_No active trades._")
+        lines.append("_Tidak ada sinyal aktif._")
 
     summary = db.performance_summary()
     if summary["trades"]:
         lines += [
             "",
-            "*Realized:*",
-            f"  {summary['trades']} trades, {summary['win_rate']:.0f}% win rate",
-            f"  {summary['expectancy_r']:+.2f}R expectancy, {summary['total_r']:+.2f}R total",
+            "*Hasil tercatat:*",
+            f"  {summary['trades']} sinyal, win rate {summary['win_rate']:.0f}%",
+            f"  expectancy {summary['expectancy_r']:+.2f}R, total {summary['total_r']:+.2f}R",
         ]
 
     return "\n".join(lines)

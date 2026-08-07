@@ -286,6 +286,34 @@ aegis/
 ./venv/bin/python3 analysis/backtest/download_positioning.py --period 4h --open-interest --funding
 ```
 
+## Deploy ke VPS
+
+Clone bersih langsung jalan — database dibuat otomatis, dan **tidak ada API key
+yang perlu diisi**. Diverifikasi dari clone kosong tanpa `data/`.
+
+```bash
+git pull
+./venv/bin/pip install -r requirements.txt      # requests kini eksplisit
+./aegis.sh test                                  # harus 93 lolos
+./aegis.sh scan                                  # cek satu scan berjalan
+
+# Sekali saja: isi history funding + open interest untuk konteks sinyal
+./venv/bin/python3 analysis/backtest/download_positioning.py \
+    --period 4h --open-interest --funding
+
+./aegis.sh bot                                   # jalankan bot Telegram
+```
+
+Tanpa langkah `download_positioning`, sinyal tetap keluar normal — hanya baris
+**Funding** dan **perubahan OI 24j** yang absen dari blok konteks. Open interest
+saat ini, volume, dan order book tetap muncul karena diambil langsung.
+
+`.env` hanya perlu `TELEGRAM_BOT_TOKEN` dan `TELEGRAM_CHAT_ID`. Tidak ada
+kredensial exchange, karena tidak ada yang perlu diautentikasi.
+
+Jangan menjalankan `aegis_bot.py` dan `poll_scanner.py` bersamaan — keduanya
+memakai lock `.aegis_scan.lock` dan yang kedua akan keluar.
+
 ## Don'ts
 - **JANGAN** menambahkan eksekusi order dalam bentuk apa pun — tidak ada penempatan
   order, tidak ada API key, tidak ada mode paper. Aegis memberi informasi, titik.
