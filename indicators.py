@@ -3,31 +3,40 @@ import numpy as np
 
 
 def atr(df: pd.DataFrame, period: int = 14) -> pd.Series:
-    high_low = df["High"] - df["Low"]
-    high_prev_close = abs(df["High"] - df["Close"].shift(1))
-    low_prev_close = abs(df["Low"] - df["Close"].shift(1))
-    tr = high_low.combine(high_prev_close, max).combine(low_prev_close, max)
+    high_low = (df["High"] - df["Low"]).to_numpy()
+    high_prev_close = (df["High"] - df["Close"].shift(1)).abs().to_numpy()
+    low_prev_close = (df["Low"] - df["Close"].shift(1)).abs().to_numpy()
+    tr = pd.Series(
+        np.maximum(np.maximum(high_low, high_prev_close), low_prev_close),
+        index=df.index,
+    )
     return tr.rolling(period).mean()
 
 
 def swing_highs(df: pd.DataFrame, window: int = 3) -> pd.Series:
-    highs = df["High"]
-    result = pd.Series(False, index=df.index)
-    for i in range(window, len(df) - window):
-        if all(highs.iloc[i] > highs.iloc[i - j] for j in range(1, window + 1)) and \
-           all(highs.iloc[i] > highs.iloc[i + j] for j in range(1, window + 1)):
-            result.iloc[i] = True
-    return result
+    highs = df["High"].to_numpy()
+    n = len(highs)
+    result = np.zeros(n, dtype=bool)
+    lo, hi = window, n - window
+    if hi > lo:
+        center = highs[lo:hi]
+        left = np.column_stack([highs[lo - j:hi - j] for j in range(1, window + 1)])
+        right = np.column_stack([highs[lo + j:hi + j] for j in range(1, window + 1)])
+        result[lo:hi] = (center[:, None] > left).all(axis=1) & (center[:, None] > right).all(axis=1)
+    return pd.Series(result, index=df.index)
 
 
 def swing_lows(df: pd.DataFrame, window: int = 3) -> pd.Series:
-    lows = df["Low"]
-    result = pd.Series(False, index=df.index)
-    for i in range(window, len(df) - window):
-        if all(lows.iloc[i] < lows.iloc[i - j] for j in range(1, window + 1)) and \
-           all(lows.iloc[i] < lows.iloc[i + j] for j in range(1, window + 1)):
-            result.iloc[i] = True
-    return result
+    lows = df["Low"].to_numpy()
+    n = len(lows)
+    result = np.zeros(n, dtype=bool)
+    lo, hi = window, n - window
+    if hi > lo:
+        center = lows[lo:hi]
+        left = np.column_stack([lows[lo - j:hi - j] for j in range(1, window + 1)])
+        right = np.column_stack([lows[lo + j:hi + j] for j in range(1, window + 1)])
+        result[lo:hi] = (center[:, None] < left).all(axis=1) & (center[:, None] < right).all(axis=1)
+    return pd.Series(result, index=df.index)
 
 
 def detect_bos(df: pd.DataFrame, window: int = 10) -> dict:
@@ -105,10 +114,18 @@ def order_blocks(df: pd.DataFrame, lookback: int = 30) -> dict:
     }
 
 
-def fair_value_gaps(df: pd.DataFrame, lookback: int = 30) -> dict:
+def fair_value_gaps(df: pd.DataFrame, lookback: int = 30, max_fvgs: int | None = None) -> dict:
+    """Find 3-candle fair value gaps within `lookback` bars.
+
+    `max_fvgs` caps how many are returned, newest first. It used to be hardcoded
+    to 3, which silently made the caller's `lookback=60` meaningless: the
+    strategy sorts the returned gaps to pick the one nearest price, but was only
+    ever choosing among the 3 most recent. Default None returns everything found
+    in the lookback, so the caller's window means what it says.
+    """
     bullish_fvgs = []
     bearish_fvgs = []
-    for i in range(2, min(lookback, len(df))):
+    for i in range(2, min(lookback, len(df) - 1)):
         idx = -i
         c0_low = df.iloc[idx - 2]["Low"]
         c0_high = df.iloc[idx - 2]["High"]
@@ -154,8 +171,8 @@ def fair_value_gaps(df: pd.DataFrame, lookback: int = 30) -> dict:
                 nearest_bearish_gap_low = fvg["gap_low"]
                 nearest_bearish_gap_mid = fvg["gap_mid"]
     return {
-        "bullish_fvgs": bullish_fvgs[:3],
-        "bearish_fvgs": bearish_fvgs[:3],
+        "bullish_fvgs": bullish_fvgs[:max_fvgs] if max_fvgs else bullish_fvgs,
+        "bearish_fvgs": bearish_fvgs[:max_fvgs] if max_fvgs else bearish_fvgs,
         "nearest_fvg_price": nearest_bullish_gap_high if nearest_bullish_gap_high is not None else nearest_bearish_gap_low,
         "nearest_fvg_mid": nearest_bullish_gap_mid if nearest_bullish_gap_mid is not None else nearest_bearish_gap_mid,
         "nearest_bullish_fvg_high": nearest_bullish_gap_high,
@@ -176,7 +193,20 @@ def is_impulsive_candle(row, atr_val=None) -> bool:
     return False
 
 
-def detect_structure(df: pd.DataFrame, window: int = 15) -> dict:
+def detect_structure(df: pd.DataFrame, window: int = 15, trend_window: int | None = None) -> dict:
+    """Classify the last candle's break of recent structure.
+
+    Two different lookbacks are needed and conflating them was a real defect:
+
+    * `window` bounds which swing counts as *the level being broken*. It should
+      stay short, because breaking a stale high is not a structure event.
+    * `trend_window` bounds the swing sequence used to decide whether a trend
+      exists at all. Two confirmed swings per side simply do not fit in 15 bars
+      — measured on BTC 4h, a trend was detectable in only 13.8% of bars at
+      window=15, versus ~43% at 30-40. With no trend detectable, every break
+      was classified trendless and the CHoCH/BOS distinction never fired.
+    """
+    trend_window = trend_window if trend_window is not None else window * 2
     if len(df) < window + 5:
         return {
             "bullish_choch": False, "bearish_choch": False,
@@ -197,28 +227,43 @@ def detect_structure(df: pd.DataFrame, window: int = 15) -> dict:
     last_sh = float(df.loc[last_sh_idx, "High"]) if last_sh_idx is not None else float(recent.iloc[:-1]["High"].max())
     last_sl = float(df.loc[last_sl_idx, "Low"]) if last_sl_idx is not None else float(recent.iloc[:-1]["Low"].min())
 
+    # Trend context comes from the wider window; the break level above does not.
+    trend_start = df.index[-min(trend_window, len(df))]
+    t_sh_idx = sh[sh].index[sh[sh].index >= trend_start]
+    t_sl_idx = sl[sl].index[sl[sl].index >= trend_start]
     bullish_trend = (
-        len(sh_idx) >= 2 and len(sl_idx) >= 2
-        and df.loc[sh_idx[-1], "High"] > df.loc[sh_idx[-2], "High"]
-        and df.loc[sl_idx[-1], "Low"] > df.loc[sl_idx[-2], "Low"]
+        len(t_sh_idx) >= 2 and len(t_sl_idx) >= 2
+        and df.loc[t_sh_idx[-1], "High"] > df.loc[t_sh_idx[-2], "High"]
+        and df.loc[t_sl_idx[-1], "Low"] > df.loc[t_sl_idx[-2], "Low"]
     )
     bearish_trend = (
-        len(sh_idx) >= 2 and len(sl_idx) >= 2
-        and df.loc[sh_idx[-1], "High"] < df.loc[sh_idx[-2], "High"]
-        and df.loc[sl_idx[-1], "Low"] < df.loc[sl_idx[-2], "Low"]
+        len(t_sh_idx) >= 2 and len(t_sl_idx) >= 2
+        and df.loc[t_sh_idx[-1], "High"] < df.loc[t_sh_idx[-2], "High"]
+        and df.loc[t_sl_idx[-1], "Low"] < df.loc[t_sl_idx[-2], "Low"]
     )
     bullish_break = last_candle["Close"] > last_sh and is_impulsive_candle(last_candle, atr_val)
     bearish_break = last_candle["Close"] < last_sl and is_impulsive_candle(last_candle, atr_val)
+    # BOS is continuation, so it requires the trend it continues; CHoCH is
+    # reversal, so it requires the opposite trend to reverse. A break with no
+    # established trend (fewer than two confirmed swings each side) is neither —
+    # it is just an impulsive candle clearing a recent extreme.
+    #
+    # The old code called that third case a BOS, which made 97% of signals
+    # "BOS" and hid how weak the structure gate really was. The classification
+    # below is descriptive only: `bullish_break` / `bearish_break` stay the
+    # gating flags, so entry behaviour is unchanged and the three kinds can now
+    # be measured separately before any of them is filtered out.
     bullish_choch = bullish_break and bearish_trend
     bearish_choch = bearish_break and bullish_trend
-    bullish_bos = bullish_break and not bearish_trend
-    bearish_bos = bearish_break and not bullish_trend
+    bullish_bos = bullish_break and bullish_trend
+    bearish_bos = bearish_break and bearish_trend
+    trendless = not (bullish_trend or bearish_trend)
 
     event = None
     if bullish_break:
         event = {
             "direction": "long",
-            "kind": "CHOCH" if bullish_choch else "BOS",
+            "kind": "CHOCH" if bullish_choch else ("BOS" if bullish_bos else "BREAK"),
             "index": df.index[-1],
             "broken_swing_index": last_sh_idx,
             "level": last_sh,
@@ -226,7 +271,7 @@ def detect_structure(df: pd.DataFrame, window: int = 15) -> dict:
     elif bearish_break:
         event = {
             "direction": "short",
-            "kind": "CHOCH" if bearish_choch else "BOS",
+            "kind": "CHOCH" if bearish_choch else ("BOS" if bearish_bos else "BREAK"),
             "index": df.index[-1],
             "broken_swing_index": last_sl_idx,
             "level": last_sl,
@@ -236,6 +281,9 @@ def detect_structure(df: pd.DataFrame, window: int = 15) -> dict:
         "bearish_choch": bool(bearish_choch),
         "bullish_bos": bool(bullish_bos),
         "bearish_bos": bool(bearish_bos),
+        "bullish_break": bool(bullish_break),
+        "bearish_break": bool(bearish_break),
+        "trendless_break": bool((bullish_break or bearish_break) and trendless),
         "last_swing_high": last_sh,
         "last_swing_low": last_sl,
         "event": event,
@@ -246,12 +294,24 @@ def detect_choch(df: pd.DataFrame, window: int = 15) -> dict:
     return detect_structure(df, window)
 
 
-def latest_structure_event(df: pd.DataFrame, direction: str, window: int = 15) -> dict:
-    """Return the most recent confirmed structure break for one direction."""
+def latest_structure_event(
+    df: pd.DataFrame,
+    direction: str,
+    window: int = 15,
+    max_bars_back: int = 30,
+) -> dict:
+    """Return the most recent confirmed structure break for one direction.
+
+    `max_bars_back` bounds how far back the break may have happened. Without it
+    the search ran to the start of the frame, so with 100 HTF candles a 4h break
+    from over two weeks ago could still satisfy the structure gate on a live
+    entry. A structure event that old is not context, it is history.
+    """
     minimum_length = window + 5
     if len(df) < minimum_length:
         return detect_structure(df, window)
-    for end in range(len(df), minimum_length - 1, -1):
+    earliest = max(minimum_length - 1, len(df) - max_bars_back)
+    for end in range(len(df), earliest, -1):
         result = detect_structure(df.iloc[:end], window)
         event = result["event"]
         if event is not None and event["direction"] == direction:
@@ -288,13 +348,44 @@ def order_block_for_event(
     return None
 
 
-def liquidity_inflection(df: pd.DataFrame, direction: str = "long", before=None, window: int = 30) -> float | None:
+def liquidity_inflection(
+    df: pd.DataFrame,
+    direction: str = "long",
+    before=None,
+    window: int = 30,
+    swing_window: int = 3,
+) -> float | None:
+    """Stop-loss anchor: the last confirmed swing before `before`.
+
+    The rolling extreme of the whole window is not a structural level — it is
+    just the furthest price travelled, so it sits far from the entry and
+    inflates R. With R inflated, a 3R target is a move the setup rarely makes
+    (measured: median MFE 0.66R, only 14% of trades reached 3R). The last
+    confirmed swing is the level price actually reacted to, and it keeps R
+    proportional to the structure being traded.
+
+    Falls back to the rolling extreme when no swing is confirmed in the window:
+    a fractal swing needs `swing_window` bars on each side, so short or very
+    quiet frames can legitimately contain none.
+    """
     reference = df.loc[df.index < before] if before is not None else df
     if reference.empty:
         return None
     recent = reference.iloc[-window:]
+
     if direction == "long":
+        swings = swing_lows(reference, swing_window)
+        confirmed = swings[swings].index
+        in_window = confirmed[confirmed >= recent.index[0]]
+        if len(in_window):
+            return float(reference.loc[in_window[-1], "Low"])
         return float(recent["Low"].min())
+
+    swings = swing_highs(reference, swing_window)
+    confirmed = swings[swings].index
+    in_window = confirmed[confirmed >= recent.index[0]]
+    if len(in_window):
+        return float(reference.loc[in_window[-1], "High"])
     return float(recent["High"].max())
 
 

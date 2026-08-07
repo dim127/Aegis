@@ -2,6 +2,7 @@ import sys
 sys.path.insert(0, ".")
 
 from strategy.aegis_strategy import AegisSMCStrategy
+from notifications.telegram_bot import fmt_price
 
 
 def scan_smc():
@@ -27,14 +28,20 @@ def scan_smc():
         print(f"{'=' * 50}")
         print(f"HTF Bias: {s['htf_bias_text']}")
         print(f"LTF Confirmation: {s['ltf_conf_text']}")
-        print(f"  Take Profit: ${s['tp']:.2f} → 1:{s['rr']:.2f} RR")
+        print(f"  Take Profit: ${fmt_price(s['tp'], s['entry'])} → "
+              f"1:{s['rr']:.2f} RR (net 1:{s.get('rr_net', s['rr']):.2f})")
+        print()
+        print(f"Confluence Factors ({s['confluence']}/8):")
+        for reason in s["reasons"]:
+            print(f"  * {reason}")
         print()
         print("Trade Setup:")
         print(f"  * Action: {s['action']}")
-        print(f"  * Entry Price: ${s['entry']:.2f}")
-        print(f"  * Stop Loss: ${s['sl']:.2f}")
-        print(f"  * Take Profit: ${s['tp']:.2f}")
-        print(f"  * Risk-to-Reward Ratio: 1:{s['rr']:.2f}")
+        print(f"  * Entry Price: ${fmt_price(s['entry'])}")
+        print(f"  * Stop Loss: ${fmt_price(s['sl'], s['entry'])}")
+        print(f"  * Take Profit: ${fmt_price(s['tp'], s['entry'])}")
+        print(f"  * Risk: {s.get('risk_pct', 0):.2f}% of price")
+        print(f"  * Risk-to-Reward Ratio: 1:{s['rr']:.2f} (net 1:{s.get('rr_net', s['rr']):.2f})")
         print()
         print(f"Management Rules: {s['management_rules']}")
 
