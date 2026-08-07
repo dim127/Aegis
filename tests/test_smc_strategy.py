@@ -116,6 +116,18 @@ class StrategyRuleTests(unittest.TestCase):
             "gap_mid": 102.5,
         }
 
+    def test_exchange_is_saved_when_injected(self):
+        with patch("strategy.aegis_strategy.ccxt.binanceusdm") as mock_cls:
+            strategy = AegisSMCStrategy(exchange="fake", config=APPROVED_CONFIG)
+        mock_cls.assert_not_called()
+        self.assertEqual(strategy.exchange, "fake")
+
+    def test_exchange_is_created_when_none(self):
+        with patch("strategy.aegis_strategy.ccxt.binanceusdm") as mock_cls:
+            strategy = AegisSMCStrategy(exchange=None, config=APPROVED_CONFIG)
+        mock_cls.assert_called_once()
+        self.assertEqual(strategy.exchange, mock_cls.return_value)
+
     def test_valid_setup_counts_only_the_five_official_factors(self):
         htf_event = {"direction": "long", "kind": "BOS", "index": self.df_15m.index[-1], "level": 109.0}
         htf = structure_result(event=htf_event, bullish_bos=True)
@@ -203,7 +215,7 @@ class ClosedCandleReplayTests(unittest.TestCase):
         raw_15m = to_raw(make_frame(51).set_axis(fifteen_minute_index))
         received_lengths = []
 
-        def check_direction(df_15m, df_1m, direction):
+        def check_direction(df_15m, df_1m, direction, tf_htf="15m", tf_ltf="1m"):
             received_lengths.append((len(df_15m), len(df_1m), direction))
             return {"valid": False}
 
