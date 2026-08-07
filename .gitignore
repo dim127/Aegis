@@ -9,3 +9,10 @@ build/
 *.parquet
 .venv/
 .gemini/
+aegis_signals.db
+aegis_signals_testnet.db
+data/
+analysis/backtest/results/
+*.lock
+binance_credentials.json
+binance_testnet_credentials.json
