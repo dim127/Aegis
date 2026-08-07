@@ -15,4 +15,4 @@ data/
 analysis/backtest/results/
 *.lock
 binance_credentials.json
-binance_testnet_credentials.json
+binance_*_credentials.json
