@@ -193,6 +193,32 @@ tidak ada swing terkonfirmasi di window.
 `latest_structure_event` dibatasi `max_bars_back=30`: tanpa itu, break 4h dari >2 minggu lalu
 masih bisa meloloskan entry live.
 
+## Venue: Binance USDT-M futures
+
+Sinyal dibaca dari Binance dan dieksekusi manual di Binance juga, jadi harga yang
+dikutip Aegis **persis harga yang bisa dipasang** di order book Anda:
+
+| Simbol Aegis | Simbol Binance | Tick |
+|--------------|----------------|------|
+| `BTC/USDT:USDT` | `BTCUSDT` | 0.1 |
+| `BNB/USDT:USDT` | `BNBUSDT` | 0.01 |
+| `XRP/USDT:USDT` | `XRPUSDT` | 0.0001 |
+
+Karena itu entry/SL/TP di-snap ke tick size asli (`quantize_price`) — angka seperti
+`592.05` bisa langsung disalin ke form limit order tanpa ditolak exchange.
+
+Asumsi biaya di `risk.costs` juga memakai tarif Binance VIP0: maker **0.02%**,
+taker **0.04%**. Kalau Anda membayar fee dengan BNB (diskon 10%), biaya nyata lebih
+rendah dari model — jadi gate biaya bersifat **konservatif**, menolak sedikit lebih
+banyak setup daripada seharusnya. Itu arah kesalahan yang aman.
+
+**Kenapa Binance, bukan Hyperliquid** (diuji 2026-08-07): kebutuhan utama sekarang
+adalah mencari edge, dan itu butuh history sedalam mungkin. OHLCV 1m di Hyperliquid
+hanya ~3.5 hari — kombo 15m/1m tidak akan bisa di-backtest sama sekali. Funding 21
+hari vs 166 hari di Binance; open interest dan long/short ratio tidak punya history.
+Hyperliquid tetap kandidat cadangan kalau ISP suatu saat memblokir `fapi.binance.com`
+(`www.binance.com` dan `demo-fapi.binance.com` sudah diblokir).
+
 ## Pairs
 Binance USDT-M futures (via CCXT `binanceusdm`):
 - BTC/USDT:USDT
