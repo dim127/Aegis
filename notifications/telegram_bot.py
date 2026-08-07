@@ -1,8 +1,26 @@
-import json
-import os
 from datetime import datetime
 
 DATE_FMT = "%Y-%m-%d %H:%M:%S"
+
+
+def fmt_price(price, reference=None) -> str:
+    """Decimals scaled to magnitude — a flat 2dp renders XRP as '1.06'.
+
+    Pass `reference` (usually the entry) so every price in one setup shares the
+    same decimals; otherwise a TP below $1 gets more digits than its entry.
+    """
+    if price is None:
+        return "?"
+    magnitude = abs(reference if reference is not None else price)
+    if magnitude >= 1000:
+        decimals = 2
+    elif magnitude >= 10:
+        decimals = 3
+    elif magnitude >= 1:
+        decimals = 4
+    else:
+        decimals = 6
+    return f"{price:.{decimals}f}"
 
 
 def format_setup_message(setup: dict) -> str:
@@ -15,12 +33,12 @@ def format_setup_message(setup: dict) -> str:
     lines = [
         f"{emoji} *{base} [{setup.get('tf_combo', '15m/1m')}] | {direction}*",
         f"```",
-        f"Entry    ${setup['entry']:.2f}",
-        f"SL       ${setup['sl']:.2f}",
-        f"TP       ${setup['tp']:.2f}",
-        f"RR       1:{setup['rr']:.2f}",
-        f"Risk     ${setup['risk']:.2f}",
-        f"Confl    {setup['confluence']}/5",
+        f"Entry    ${fmt_price(setup['entry'])}",
+        f"SL       ${fmt_price(setup['sl'], setup['entry'])}",
+        f"TP       ${fmt_price(setup['tp'], setup['entry'])}",
+        f"RR       1:{setup['rr']:.2f} (net 1:{setup.get('rr_net', setup['rr']):.2f})",
+        f"Risk     ${fmt_price(setup['risk'], setup['entry'])} ({setup.get('risk_pct', 0):.2f}%)",
+        f"Confl    {setup['confluence']}/8",
         f"```",
         f"",
         f"*HTF:* {setup.get('htf_bias_text', 'N/A')}",
@@ -57,29 +75,34 @@ def format_scan_banner(num_setups: int) -> str:
 
 
 def format_status_message() -> str:
+    import db
+
     lines = [
         "\U0001f4ca *Aegis V4 \u2014 Status*",
         "",
     ]
-    pos_path = os.path.join(os.path.dirname(__file__), "..", "positions.json")
-    if os.path.exists(pos_path):
-        with open(pos_path) as f:
-            data = json.load(f)
-        trades = data.get("active_trades", {})
-        if trades:
-            lines.append(f"*Active Trades:* {len(trades)}")
-            for name, t in trades.items():
-                side = t.get("side", "?")
-                sym = t.get("symbol", "?")
-                entry = t.get("entry")
-                entry_str = f" @ ${entry:.2f}" if entry else ""
-                sl = t.get("sl")
-                sl_str = f" SL ${sl:.2f}" if sl else ""
-                lines.append(f"  {side} {sym}{entry_str}{sl_str}")
-        else:
-            lines.append("_No active trades._")
+    trades = db.fetch_trade_journal("PLACED") + db.fetch_trade_journal("OPEN")
+    if trades:
+        lines.append(f"*Active Trades:* {len(trades)}")
+        for t in trades:
+            side = "LONG" if t.get("direction") == "long" else "SHORT"
+            sym = t.get("pair", "?")
+            entry = t.get("entry")
+            sl = t.get("sl")
+            entry_str = f" @ ${fmt_price(entry)}" if entry else ""
+            sl_str = f" SL ${fmt_price(sl)}" if sl else ""
+            lines.append(f"  {side} {sym} [{t.get('status', '?')}]{entry_str}{sl_str}")
     else:
         lines.append("_No active trades._")
+
+    summary = db.performance_summary()
+    if summary["trades"]:
+        lines += [
+            "",
+            "*Realized:*",
+            f"  {summary['trades']} trades, {summary['win_rate']:.0f}% win rate",
+            f"  {summary['expectancy_r']:+.2f}R expectancy, {summary['total_r']:+.2f}R total",
+        ]
 
     return "\n".join(lines)
 
@@ -98,7 +121,7 @@ def format_help_message(interval: int) -> str:
         "/status \u2014 Show open positions & status\n"
         "/help \u2014 Show this help\n\n"
         f"Auto-scan every {interval} min.\n"
-        "*SMC Rules:* 3/5 confluence, 1:4 RR, limit order at FVG"
+        "*SMC Rules:* 3/8 confluence, 1:3 RR, limit order at FVG"
     )
 
 
