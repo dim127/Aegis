@@ -1,5 +1,9 @@
 # Aegis V4 — SMC Signal Scanner
 
+> **Aturan utama ada di [CLAUDE.md](CLAUDE.md) — baca itu dulu.**
+> Ringkasnya: Aegis hanya memberi sinyal, tidak pernah mengeksekusi order.
+> Aturan itu ditegakkan otomatis oleh `tests/test_no_execution.py`.
+
 ## Overview
 Aegis V4 adalah **pemberi sinyal** crypto berbasis **Smart Money Concepts (SMC)**.
 Ia memindai setup dan melaporkannya — **tidak pernah mengeksekusi order**.
