@@ -1,8 +1,22 @@
+"""Public market data from Binance USDT-M futures.
+
+Aegis is a signal scanner: it reports SMC setups and never places an order.
+Everything here is public — no API key, no credentials on disk, no way for the
+process to touch an account even by accident. That is a deliberate property,
+not an omission; the safest execution path is the one that does not exist.
+
+The module keeps the name `execution` because every caller imports it that way.
+"""
+import json
 import logging
-import ccxt
+from pathlib import Path
 from typing import Optional
 
+import ccxt
+
 logger = logging.getLogger(__name__)
+
+CONFIG_PATH = Path(__file__).resolve().parent / "aegis_config.json"
 
 EXCHANGE_CONFIG = {
     "binance_futures": {
@@ -10,121 +24,68 @@ EXCHANGE_CONFIG = {
         "enableRateLimit": True,
         "options": {"defaultType": "future"},
     },
-    "bybit": {
-        "class": ccxt.bybit,
-        "enableRateLimit": True,
-    },
-    "hyperliquid": {
-        "class": ccxt.hyperliquid,
-        "enableRateLimit": True,
-        "options": {},
-    },
 }
 
 
-def _create_exchange(name: str = "binance_futures", api_key: str = "", api_secret: str = "",
-                     wallet_address: str = "", private_key: str = ""):
+def _load_config() -> dict:
+    if not CONFIG_PATH.exists():
+        return {}
+    try:
+        with CONFIG_PATH.open() as f:
+            return json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def environment_name() -> str:
+    """Aegis only reads public data, so there is a single environment."""
+    return "SIGNAL-ONLY"
+
+
+_EXCHANGE_CACHE: dict = {}
+
+
+def _create_exchange(name: str = "binance_futures", **kwargs):
+    """Return a ccxt client, reusing one per configuration.
+
+    Clients are cached because every helper below calls this. Building a fresh
+    client per call re-fetches markets and resets ccxt's rate-limit throttle,
+    which invites an IP ban at the 60-second scan cadence.
+    """
     cfg = EXCHANGE_CONFIG.get(name)
     if not cfg:
         raise ValueError(f"Unknown exchange: {name}")
 
-    exchange_params = {
-        "apiKey": api_key,
-        "secret": api_secret,
-        "enableRateLimit": cfg.get("enableRateLimit", True),
-    }
+    cache_key = (name, tuple(sorted(kwargs.items())))
+    cached = _EXCHANGE_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
 
-    if name == "hyperliquid":
-        if wallet_address:
-            exchange_params["walletAddress"] = wallet_address
-        if private_key:
-            exchange_params["privateKey"] = private_key
-
-    exchange = cfg["class"](exchange_params)
+    params = {"enableRateLimit": cfg.get("enableRateLimit", True)}
+    params.update(kwargs)
+    exchange = cfg["class"](params)
     if cfg.get("options"):
         exchange.options.update(cfg["options"])
+    _EXCHANGE_CACHE[cache_key] = exchange
     return exchange
 
 
-def fetch_price(symbol: str = "BTC/USDT", exchange_name: str = "binance_futures") -> Optional[float]:
+def reset_exchange_cache() -> None:
+    """Drop cached clients (tests, or after a config change)."""
+    _EXCHANGE_CACHE.clear()
+
+
+def fetch_price(symbol: str = "BTC/USDT:USDT", exchange_name: str = "binance_futures") -> Optional[float]:
     try:
         exchange = _create_exchange(exchange_name)
-        ticker = exchange.fetch_ticker(symbol)
-        return ticker["last"]
+        return exchange.fetch_ticker(symbol)["last"]
     except Exception as e:
         logger.error(f"Error fetching price for {symbol} on {exchange_name}: {e}")
         return None
 
 
-def place_limit_order(
-    side: str,
-    symbol: str,
-    amount: float,
-    price: float,
-    exchange_name: str = "binance_futures",
-    api_key: str = "",
-    api_secret: str = "",
-    reduce_only: bool = False,
-    **kwargs,
-) -> Optional[dict]:
-    try:
-        exchange = _create_exchange(exchange_name, api_key, api_secret)
-        params = {"reduceOnly": reduce_only} if reduce_only else {}
-        params.update(kwargs)
-        order = exchange.create_limit_order(symbol, side, amount, price, params)
-        logger.info(f"Limit {side} order placed: {amount} {symbol} @ {price}")
-        return order
-    except Exception as e:
-        logger.error(f"Error placing limit {side} order for {symbol}: {e}")
-        return None
-
-
-def cancel_order(order_id: str, symbol: str, exchange_name: str = "binance_futures") -> bool:
-    try:
-        exchange = _create_exchange(exchange_name)
-        exchange.cancel_order(order_id, symbol)
-        logger.info(f"Cancelled order {order_id} for {symbol}")
-        return True
-    except Exception as e:
-        logger.error(f"Error cancelling order {order_id}: {e}")
-        return False
-
-
-def fetch_open_orders(symbol: str, exchange_name: str = "binance_futures") -> list:
-    try:
-        exchange = _create_exchange(exchange_name)
-        return exchange.fetch_open_orders(symbol)
-    except Exception as e:
-        logger.error(f"Error fetching open orders for {symbol}: {e}")
-        return []
-
-
-def calculate_position_size(
-    capital: float,
-    risk_percent: float,
-    entry_price: float,
-    stop_loss_price: float,
-    leverage: float = 1.0,
-) -> float:
-    risk_amount = capital * (risk_percent / 100.0)
-    price_distance = abs(entry_price - stop_loss_price)
-    if price_distance == 0:
-        return 0.0
-    raw_size = (risk_amount / price_distance) * leverage
-    return max(raw_size, 0.0)
-
-
-def fetch_hyperliquid_funding(symbol: str = "BTC/USDC:USDC") -> Optional[dict]:
-    try:
-        exchange = _create_exchange("hyperliquid")
-        return exchange.fetch_funding_rate(symbol)
-    except Exception as e:
-        logger.error(f"Error fetching Hyperliquid funding for {symbol}: {e}")
-        return None
-
-
-def fetch_hyperliquid_ohlcv(symbol: str = "BTC/USDC:USDC", interval: str = "1h",
-                            limit: int = 336, exchange_name: str = "hyperliquid") -> Optional[list]:
+def fetch_ohlcv(symbol: str = "BTC/USDT:USDT", interval: str = "1h",
+                limit: int = 336, exchange_name: str = "binance_futures") -> Optional[list]:
     try:
         exchange = _create_exchange(exchange_name)
         return exchange.fetch_ohlcv(symbol, interval, limit=limit)
@@ -133,10 +94,28 @@ def fetch_hyperliquid_ohlcv(symbol: str = "BTC/USDC:USDC", interval: str = "1h",
         return None
 
 
-def fetch_hyperliquid_tickers(exchange_name: str = "hyperliquid") -> Optional[dict]:
+def get_market(symbol: str, exchange_name: str = "binance_futures") -> Optional[dict]:
     try:
         exchange = _create_exchange(exchange_name)
-        return exchange.fetch_tickers()
+        if not exchange.markets:
+            exchange.load_markets()
+        return exchange.market(symbol)
     except Exception as e:
-        logger.error(f"Error fetching Hyperliquid tickers: {e}")
+        logger.error(f"Error loading market {symbol}: {e}")
         return None
+
+
+def quantize_price(symbol: str, price: float, exchange_name: str = "binance_futures") -> float:
+    """Snap a price to the symbol's tick size.
+
+    A signal quoting a price that cannot exist on the book is a broken signal:
+    rounding to two decimals collapsed XRP's risk distance to a single cent.
+    """
+    try:
+        exchange = _create_exchange(exchange_name)
+        if not exchange.markets:
+            exchange.load_markets()
+        return float(exchange.price_to_precision(symbol, price))
+    except Exception as e:
+        logger.error(f"Error quantizing price for {symbol}: {e}")
+        return price

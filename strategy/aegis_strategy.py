@@ -8,6 +8,10 @@ from indicators import (
     atr, detect_structure, fair_value_gaps, is_fvg_mitigated, latest_structure_event,
     is_breakout_candle, liquidity_inflection, order_block_for_event, detect_liquidity_sweep
 )
+from market_metrics import (
+    PositioningSeries, estimate_liquidation_clusters, fetch_liquidity_walls,
+    fetch_open_interest, long_short_24h, volume_context,
+)
 
 
 class AegisSMCStrategy:
@@ -16,13 +20,22 @@ class AegisSMCStrategy:
     DEFAULT_RR_TARGET = 3.0
     DEFAULT_ATR_PROXIMITY = 2.0
     DEFAULT_MIN_CONFLUENCE = 3
+    DEFAULT_COSTS = {
+        "maker_fee_pct": 0.02,
+        "taker_fee_pct": 0.04,
+        "slippage_pct": 0.02,
+        "min_cost_multiple": 8.0,
+    }
     TIMEFRAME_DURATIONS = {"1m": pd.Timedelta(minutes=1), "5m": pd.Timedelta(minutes=5), "15m": pd.Timedelta(minutes=15), "1h": pd.Timedelta(hours=1), "4h": pd.Timedelta(hours=4)}
 
     def __init__(self, exchange=None, config: dict | None = None):
-        self.exchange = exchange or ccxt.hyperliquid({
-            "enableRateLimit": True,
-            "timeout": 20000,
-        })
+        if exchange is None:
+            exchange = ccxt.binanceusdm({
+                "enableRateLimit": True,
+                "timeout": 20000,
+                "options": {"defaultType": "future"},
+            })
+        self.exchange = exchange
         config = config if config is not None else self._load_config()
         smc_config = config.get("smc", {})
         self.pairs = [self._normalize_pair(pair) for pair in config.get("smc_pairs", self.DEFAULT_PAIRS)]
@@ -30,12 +43,31 @@ class AegisSMCStrategy:
         self.atr_proximity = float(smc_config.get("atr_proximity", self.DEFAULT_ATR_PROXIMITY))
         self.min_confluence = int(smc_config.get("min_confluence", self.DEFAULT_MIN_CONFLUENCE))
 
+        market_cfg = smc_config.get("market", {})
+        self.long_short_enabled = bool(market_cfg.get("long_short_enabled", True))
+        self.liquidation_enabled = bool(market_cfg.get("liquidation_enabled", True))
+        self.liquidation_leverage = float(market_cfg.get("liquidation_leverage", 10.0))
+        self.cluster_proximity_pct = float(market_cfg.get("cluster_proximity_pct", 3.0))
+        self.market_cache_minutes = int(market_cfg.get("cache_minutes", 60))
+        self.long_short_source = market_cfg.get("long_short_source", "top_position")
+
+        # Round-trip cost: maker on the limit entry, taker on the STOP_MARKET /
+        # TAKE_PROFIT_MARKET exit, plus expected slippage on the market exit.
+        costs = {**self.DEFAULT_COSTS, **config.get("risk", {}).get("costs", {})}
+        self.round_trip_cost_pct = (
+            float(costs["maker_fee_pct"])
+            + float(costs["taker_fee_pct"])
+            + float(costs["slippage_pct"])
+        )
+        self.min_cost_multiple = float(costs["min_cost_multiple"])
+        self.min_stop_pct = self.round_trip_cost_pct * self.min_cost_multiple
+
         if len(self.pairs) < 5:
             raise ValueError("smc_pairs must have at least 5 pairs")
         if self.rr_target < self.DEFAULT_RR_TARGET:
             raise ValueError("smc.rr_target cannot be below 3.0")
-        if self.min_confluence < self.DEFAULT_MIN_CONFLUENCE or self.min_confluence > 5:
-            raise ValueError("smc.min_confluence must be between 3 and 5")
+        if self.min_confluence < self.DEFAULT_MIN_CONFLUENCE or self.min_confluence > 8:
+            raise ValueError("smc.min_confluence must be between 3 and 8")
 
     @staticmethod
     def _load_config() -> dict:
@@ -47,7 +79,45 @@ class AegisSMCStrategy:
 
     @staticmethod
     def _normalize_pair(pair: str) -> str:
-        return pair if "/" in pair else f"{pair}/USDC:USDC"
+        return pair if "/" in pair else f"{pair}/USDT:USDT"
+
+    @staticmethod
+    def _fmt(price: float) -> str:
+        """Format a price with enough decimals to stay meaningful.
+
+        A flat 2dp renders XRP as '1.06' and collapses its risk to a single
+        cent, which is where the sizing blow-ups came from.
+        """
+        magnitude = abs(price)
+        if magnitude >= 1000:
+            decimals = 2
+        elif magnitude >= 10:
+            decimals = 3
+        elif magnitude >= 1:
+            decimals = 4
+        else:
+            decimals = 6
+        return f"{price:.{decimals}f}"
+
+    def _quantizer(self, symbol: str):
+        """Callable snapping a price to the symbol's tick size, or None."""
+        exchange = self.exchange
+        if not hasattr(exchange, "price_to_precision"):
+            return None
+        try:
+            if not getattr(exchange, "markets", None):
+                exchange.load_markets()
+        except Exception as e:
+            print(f"  market load failed for {symbol}: {e}")
+            return None
+
+        def quantize(price: float) -> float:
+            try:
+                return float(exchange.price_to_precision(symbol, price))
+            except Exception:
+                return price
+
+        return quantize
 
     def _ohlcv_to_df(self, raw: list, timeframe: str, now=None) -> pd.DataFrame | None:
         if not raw or len(raw) < 50:
@@ -63,31 +133,52 @@ class AegisSMCStrategy:
         df = df.loc[df.index + duration <= now]
         return df if len(df) >= 50 else None
 
-    def _check_direction(self, df_htf: pd.DataFrame, df_ltf: pd.DataFrame, direction: str, tf_htf: str, tf_ltf: str) -> dict:
-        bull_dir = direction == "long"
-
+    @staticmethod
+    def _htf_context(df_htf: pd.DataFrame, direction: str) -> tuple:
+        """Heavy HTF analysis reused across identical HTF slices in a replay scan."""
         structure_htf = latest_structure_event(df_htf, direction, window=15)
         atr_htf_val = atr(df_htf, period=14).iloc[-1] if len(df_htf) > 14 else 0
+        return structure_htf, atr_htf_val
+
+    def _check_direction(self, df_htf: pd.DataFrame, df_ltf: pd.DataFrame, direction: str, tf_htf: str = "15m", tf_ltf: str = "1m", htf_context: tuple | None = None, market_ctx: dict | None = None, quantize=None) -> dict:
+        bull_dir = direction == "long"
+        quantize = quantize or (lambda price: price)
+
+        if htf_context is not None:
+            structure_htf, atr_htf_val = htf_context
+        else:
+            structure_htf, atr_htf_val = self._htf_context(df_htf, direction)
 
         structure_ltf = detect_structure(df_ltf, window=15)
         atr_ltf_val = atr(df_ltf, period=14).iloc[-1] if len(df_ltf) > 14 else 0
         fvg_ltf_info = fair_value_gaps(df_ltf, lookback=60)
 
+        # Gate on the raw break so behaviour matches the pre-classification code;
+        # the CHOCH / BOS / BREAK distinction is reported, not filtered on, until
+        # the backtest says which kinds are worth keeping.
         if bull_dir:
-            struct_htf = structure_htf["bullish_choch"] or structure_htf["bullish_bos"]
+            struct_htf = structure_htf.get(
+                "bullish_break",
+                structure_htf["bullish_choch"] or structure_htf["bullish_bos"],
+            )
             confirm_ltf = structure_ltf["bullish_choch"]
             fvg_below = fvg_ltf_info["bullish_fvgs"]
         else:
-            struct_htf = structure_htf["bearish_choch"] or structure_htf["bearish_bos"]
+            struct_htf = structure_htf.get(
+                "bearish_break",
+                structure_htf["bearish_choch"] or structure_htf["bearish_bos"],
+            )
             confirm_ltf = structure_ltf["bearish_choch"]
             fvg_below = fvg_ltf_info["bearish_fvgs"]
 
-        # 1. 15m structure shift
+        # 1. HTF structure shift
         reason_htf = None
         if structure_htf["bullish_choch"] if bull_dir else structure_htf["bearish_choch"]:
             reason_htf = f"{tf_htf.upper()} CHOCH {'Bullish' if bull_dir else 'Bearish'}"
         elif structure_htf["bullish_bos"] if bull_dir else structure_htf["bearish_bos"]:
             reason_htf = f"{tf_htf.upper()} BOS {'Bullish' if bull_dir else 'Bearish'}"
+        elif struct_htf:
+            reason_htf = f"{tf_htf.upper()} level break {'Bullish' if bull_dir else 'Bearish'} (no trend)"
 
         # 2. 1m CHOCH alignment
         reason_ltf = None
@@ -112,7 +203,7 @@ class AegisSMCStrategy:
                         best_fvg = fvg
                         break
             if best_fvg:
-                reason_fvg = f"{tf_ltf.upper()} Bullish FVG ${best_fvg['gap_low']:.2f}-${best_fvg['gap_high']:.2f} (fresh)"
+                reason_fvg = f"{tf_ltf.upper()} Bullish FVG ${self._fmt(best_fvg['gap_low'])}-${self._fmt(best_fvg['gap_high'])} (fresh)"
         else:
             sorted_fvgs = sorted(fvg_below, key=lambda x: x["gap_low"])
             if sorted_fvgs:
@@ -123,7 +214,7 @@ class AegisSMCStrategy:
                         best_fvg = fvg
                         break
             if best_fvg:
-                reason_fvg = f"{tf_ltf.upper()} Bearish FVG ${best_fvg['gap_low']:.2f}-${best_fvg['gap_high']:.2f} (fresh)"
+                reason_fvg = f"{tf_ltf.upper()} Bearish FVG ${self._fmt(best_fvg['gap_low'])}-${self._fmt(best_fvg['gap_high'])} (fresh)"
 
         entry = best_fvg["gap_mid"] if best_fvg else None
 
@@ -137,7 +228,7 @@ class AegisSMCStrategy:
                 ob_price = associated_ob["high"] if bull_dir else associated_ob["low"]
                 dist = abs(entry - ob_price)
                 if dist < atr_htf_val * self.atr_proximity:
-                    reason_ob = f"{'Bullish' if bull_dir else 'Bearish'} OB ${ob_price:.2f} ({dist/atr_htf_val:.1f} ATR)"
+                    reason_ob = f"{'Bullish' if bull_dir else 'Bearish'} OB ${self._fmt(ob_price)} ({dist/atr_htf_val:.1f} ATR)"
 
         # 5. Breakout candle impulse
         reason_breakout = None
@@ -148,6 +239,30 @@ class AegisSMCStrategy:
         reason_sweep = None
         if structure_time is not None and detect_liquidity_sweep(df_ltf, direction, before=structure_time, window=30):
             reason_sweep = f"{tf_ltf.upper()} Liquidity Sweep before CHOCH"
+
+        # 7. Binance Long/Short 24h (contrarian: crowd against the direction)
+        reason_long_short = None
+        if market_ctx is not None and market_ctx.get("long_short"):
+            ls = market_ctx["long_short"]
+            crowd = "long" if ls["long_pct"] > ls["short_pct"] else "short"
+            if crowd != direction:
+                reason_long_short = (
+                    f"Binance Long/Short 24h: {ls['long_pct']:.1f}%L/"
+                    f"{ls['short_pct']:.1f}%S (crowded {crowd}, supports {direction})"
+                )
+
+        # 8. Liquidation cluster in the direction of travel, near the entry
+        reason_cluster = None
+        if market_ctx is not None and market_ctx.get("clusters") and best_fvg is not None:
+            clusters = market_ctx["clusters"]
+            target = clusters["nearest_below"] if bull_dir else clusters["nearest_above"]
+            if target is not None and best_fvg["gap_mid"] > 0:
+                dist_pct = abs(target["price"] - best_fvg["gap_mid"]) / best_fvg["gap_mid"] * 100.0
+                if dist_pct <= self.cluster_proximity_pct:
+                    reason_cluster = (
+                        f"Liquidation cluster ${self._fmt(target['price'])} "
+                        f"({dist_pct:.1f}% dari entry, {target['strength']})"
+                    )
 
         # Mandatory: structure shift (15m CHOCH/BOS OR 1m CHOCH).
         has_structure = struct_htf or confirm_ltf
@@ -165,35 +280,58 @@ class AegisSMCStrategy:
             return {"valid": False, "reason": "No liquidity sweep before structure shift",
                     "reasons": [r for r in [reason_htf, reason_ltf, reason_fvg] if r], "confluence": 0}
 
-        reasons = [r for r in [reason_htf, reason_ltf, reason_fvg, reason_ob, reason_breakout, reason_sweep] if r]
+        reasons = [r for r in [reason_htf, reason_ltf, reason_fvg, reason_ob, reason_breakout, reason_sweep, reason_long_short, reason_cluster] if r]
         confluence = len(reasons)
 
         if confluence < self.min_confluence:
-            return {"valid": False, "reason": f"Confluence too low: {confluence}/5",
+            return {"valid": False,
+                    "reason": f"Confluence too low: {confluence}/8 (need {self.min_confluence})",
                     "reasons": reasons, "confluence": confluence}
 
         sl = liquidity_inflection(df_ltf, direction, before=best_fvg["index"])
         if sl is None:
-            return {"valid": False, "reason": "No confirmed swing before FVG for Stop Loss"}
-            
+            return {"valid": False, "reason": "No confirmed swing before FVG for Stop Loss",
+                    "reasons": reasons, "confluence": confluence}
+
         sl_buffer = atr_ltf_val * 1.5
         if bull_dir:
             sl -= sl_buffer
         else:
             sl += sl_buffer
 
+        # Snap to the exchange tick before measuring risk: the traded prices are
+        # what the risk is actually taken on.
+        entry = quantize(entry)
+        sl = quantize(sl)
+
         if bull_dir:
             risk = entry - sl
             if risk <= 0:
-                return {"valid": False, "reason": f"Invalid SL: entry ${entry:.2f} <= SL ${sl:.2f}"}
-            tp = entry + (risk * self.rr_target)
+                return {"valid": False,
+                        "reason": f"Invalid SL: entry ${self._fmt(entry)} <= SL ${self._fmt(sl)}",
+                        "reasons": reasons, "confluence": confluence}
+            tp = quantize(entry + (risk * self.rr_target))
         else:
             risk = sl - entry
             if risk <= 0:
-                return {"valid": False, "reason": f"Invalid SL: entry ${entry:.2f} >= SL ${sl:.2f}"}
-            tp = entry - (risk * self.rr_target)
+                return {"valid": False,
+                        "reason": f"Invalid SL: entry ${self._fmt(entry)} >= SL ${self._fmt(sl)}",
+                        "reasons": reasons, "confluence": confluence}
+            tp = quantize(entry - (risk * self.rr_target))
+
+        # Cost gate: a stop only a few ticks wide is noise, and round-trip fees
+        # eat most of 1R. Reject before the setup ever reaches the journal.
+        risk_pct = risk / entry * 100.0
+        if risk_pct < self.min_stop_pct:
+            return {"valid": False,
+                    "reason": (f"Stop too tight vs costs: {risk_pct:.3f}% < {self.min_stop_pct:.3f}% "
+                               f"({self.round_trip_cost_pct:.3f}% round-trip x {self.min_cost_multiple:g})"),
+                    "reasons": reasons, "confluence": confluence}
 
         rr = (tp - entry) / risk if bull_dir else (entry - tp) / risk
+        # Net of costs, the reward shrinks and the loss grows by the same amount.
+        cost = entry * self.round_trip_cost_pct / 100.0
+        rr_net = (rr * risk - cost) / (risk + cost)
 
         action = "BUY LIMIT" if bull_dir else "SELL LIMIT"
 
@@ -213,11 +351,13 @@ class AegisSMCStrategy:
             "valid": True,
             "direction": direction,
             "action": action,
-            "entry": round(entry, 2),
-            "sl": round(sl, 2),
-            "tp": round(tp, 2),
+            "entry": entry,
+            "sl": sl,
+            "tp": tp,
             "rr": round(rr, 2),
-            "risk": round(risk, 2),
+            "rr_net": round(rr_net, 2),
+            "risk": risk,
+            "risk_pct": round(risk_pct, 3),
             "confluence": confluence,
             "reasons": reasons,
             "timestamp": df_ltf.index[-1],
@@ -239,16 +379,99 @@ class AegisSMCStrategy:
         if df_htf is None or df_ltf is None:
             return None
 
+        market_ctx = None
+        if self.long_short_enabled or self.liquidation_enabled:
+            market_ctx = {}
+            if self.long_short_enabled:
+                market_ctx["long_short"] = long_short_24h(
+                    sym, self.market_cache_minutes, self.long_short_source
+                )
+            if self.liquidation_enabled:
+                market_ctx["clusters"] = estimate_liquidation_clusters(df_ltf, self.liquidation_leverage)
+
+        quantize = self._quantizer(sym)
+
         best = None
         for direction in ["long", "short"]:
-            result = self._check_direction(df_htf, df_ltf, direction, tf_htf, tf_ltf)
+            result = self._check_direction(df_htf, df_ltf, direction, tf_htf, tf_ltf,
+                                           market_ctx=market_ctx, quantize=quantize)
             if result["valid"]:
                 result["pair"] = sym
                 result["base"] = base
                 result["tf_combo"] = f"{tf_htf}/{tf_ltf}"
-                if best is None or result["rr"] > best["rr"]:
+                result["tf_htf"] = tf_htf
+                result["tf_ltf"] = tf_ltf
+                if best is None or self._rank(result) > self._rank(best):
                     best = result
+        if best is not None:
+            self._attach_market_context(best, df_ltf)
         return best
+
+    def _attach_market_context(self, setup: dict, df_ltf: pd.DataFrame) -> None:
+        """Attach observed market data to a valid setup, for the reader to judge.
+
+        This is deliberately *context*, not confluence: none of it gates or
+        scores the setup. Aegis reports; the decision is the reader's, and a
+        decision needs the state of the market, not just the pattern that fired.
+
+        Only called once a setup is valid — 21 pair/combo evaluations per scan
+        would otherwise burn the REST budget on order book snapshots nobody
+        reads.
+        """
+        symbol = setup["pair"]
+        context: dict = {}
+
+        oi_now = fetch_open_interest(symbol)
+        if oi_now:
+            context["open_interest"] = oi_now["open_interest"]
+            series = PositioningSeries(symbol, "open_interest", "4h")
+            if len(series):
+                context["oi_change_24h_pct"] = series.change_pct(
+                    int(pd.Timestamp.now(tz="UTC").timestamp() * 1000), 24 * 3600 * 1000
+                )
+
+        funding = PositioningSeries(symbol, "funding_rate", "8h")
+        if len(funding):
+            now_ms = int(pd.Timestamp.now(tz="UTC").timestamp() * 1000)
+            context["funding_bp"] = funding.as_of(now_ms)
+            context["funding_z"] = funding.zscore_as_of(now_ms)
+
+        volume = volume_context(df_ltf)
+        if volume:
+            context["volume_ratio"] = volume["ratio"]
+
+        walls = fetch_liquidity_walls(symbol, setup["entry"])
+        if walls:
+            context["liquidity"] = walls
+
+        setup["context"] = context
+
+    @staticmethod
+    def _rank(setup: dict) -> tuple:
+        """Rank competing long/short setups on the same pair and combo.
+
+        Freshness leads, not confluence. `rr` is always `rr_target` by
+        construction so it carries no information, and confluence turned out to
+        be directionally biased: perpetual crowds sit net long essentially all
+        the time (measured 1309/1309 observations above 50% long across 7
+        pairs), so the contrarian factor adds +1 to every short and never to a
+        long. Ranking on confluence therefore handed almost every tie to the
+        short side regardless of setup quality.
+        """
+        return (setup["fvg_timestamp"], setup["confluence"], setup["rr_net"])
+
+    def _journal_signal(self, setup: dict) -> None:
+        """Persist a valid setup to the signal journal (non-fatal on errors)."""
+        try:
+            import db
+            entry = dict(setup)
+            entry["signal_time"] = setup["timestamp"].isoformat()
+            if db.save_signal(entry):
+                print(f"  journal: {setup['pair']} {setup['direction']} "
+                      f"entry ${self._fmt(setup['entry'])} @ {entry['signal_time']}")
+            db.log_signal(setup)
+        except Exception as e:
+            print(f"  journal error: {e}")
 
     def analyze(self) -> list[dict]:
         results = []
@@ -259,6 +482,7 @@ class AegisSMCStrategy:
                     setup = self.analyze_pair(sym, tf_htf, tf_ltf)
                     if setup:
                         results.append(setup)
+                        self._journal_signal(setup)
                 except Exception as e:
                     print(f"  ERROR {sym} ({tf_htf}/{tf_ltf}): {e}")
         return results

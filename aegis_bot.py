@@ -9,6 +9,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+from scan_lock import ScanLock
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
@@ -117,25 +118,30 @@ def main():
         )
         sys.exit(1)
 
-    app = Application.builder().token(BOT_TOKEN).build()
+    with ScanLock() as lock:
+        if not lock.acquired:
+            logger.error("Scan lock held (poll_scanner.py running) — exiting")
+            sys.exit(1)
 
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("scan", scan_command))
-    app.add_handler(CommandHandler("status", status_command))
-    app.add_handler(CommandHandler("help", help_command))
+        app = Application.builder().token(BOT_TOKEN).build()
 
-    app.job_queue.run_repeating(
-        perform_scan,
-        interval=SCAN_INTERVAL * 60,
-        first=10,
-    )
+        app.add_handler(CommandHandler("start", start))
+        app.add_handler(CommandHandler("scan", scan_command))
+        app.add_handler(CommandHandler("status", status_command))
+        app.add_handler(CommandHandler("help", help_command))
 
-    logger.info(
-        "Aegis V4 bot started. Scan interval: %d min | Chat: %s",
-        SCAN_INTERVAL,
-        CHAT_ID,
-    )
-    app.run_polling()
+        app.job_queue.run_repeating(
+            perform_scan,
+            interval=SCAN_INTERVAL * 60,
+            first=10,
+        )
+
+        logger.info(
+            "Aegis V4 bot started. Scan interval: %d min | Chat: %s",
+            SCAN_INTERVAL,
+            CHAT_ID,
+        )
+        app.run_polling()
 
 
 if __name__ == "__main__":

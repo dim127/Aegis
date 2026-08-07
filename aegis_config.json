@@ -1,20 +1,27 @@
 {
-  "exchange": {
-    "name": "hyperliquid",
-    "sandbox": false,
-    "rate_limit": true,
-    "hyperliquid": {
-      "enabled": true,
-      "wallet_address": "",
-      "private_key": ""
-    }
-  },
-  "smc_pairs": ["BTC", "ETH", "BNB", "SOL", "HYPE", "SPX", "MKTS-GOLD", "MKTS-AAPL", "MKTS-NVDA", "XRP", "LINK"],
+  "smc_pairs": ["BTC", "ETH", "BNB", "SOL", "HYPE", "XRP", "LINK"],
   "smc": {
     "rr_target": 3.0,
-    "atr_proximity": 4.0,
-    "min_confluence": 3
+    "atr_proximity": 2.0,
+    "min_confluence": 3,
+    "market": {
+      "long_short_enabled": false,
+      "liquidation_enabled": true,
+      "liquidation_leverage": 10.0,
+      "cluster_proximity_pct": 3.0,
+      "cache_minutes": 60,
+      "long_short_source": "top_position"
+    }
   },
+  "risk": {
+    "costs": {
+      "maker_fee_pct": 0.02,
+      "taker_fee_pct": 0.04,
+      "slippage_pct": 0.02,
+      "min_cost_multiple": 8.0
+    }
+  },
+  "signal_ttl_minutes": 15,
   "telegram": {
     "scan_interval_minutes": 1,
     "notify_on_scan": true,

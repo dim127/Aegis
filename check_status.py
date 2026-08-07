@@ -1,46 +1,64 @@
-import ccxt
-import time
+"""How the signals Aegis produced are faring against current price.
 
-try:
-    h = ccxt.hyperliquid()
-    
-    print("=== 🔶 BNB (LONG) ===")
-    bnb_candles = h.fetch_ohlcv('BNB/USDC:USDC', '1m', limit=500)
-    bnb_low = min([c[3] for c in bnb_candles])
-    bnb_high = max([c[2] for c in bnb_candles])
-    bnb_current = bnb_candles[-1][4]
-    bnb_entry = 568.74
-    bnb_sl = 567.48
-    bnb_tp = 573.75
-    
-    print(f"Current price: ${bnb_current}")
-    if bnb_low <= bnb_sl:
-        print("STATUS: STOP LOSS HIT ❌")
-    elif bnb_high >= bnb_tp:
-        print("STATUS: TAKE PROFIT HIT 🎯")
-    elif bnb_current > bnb_entry:
-        print(f"STATUS: ACTIVE (FLOATING PROFIT 📈 +${bnb_current - bnb_entry:.2f} / coin)")
-    else:
-        print(f"STATUS: ACTIVE (FLOATING LOSS 📉 -${bnb_entry - bnb_current:.2f} / coin)")
-    
-    print("\n=== 🔷 SOL (SHORT) ===")
-    sol_candles = h.fetch_ohlcv('SOL/USDC:USDC', '1m', limit=105)
-    sol_low = min([c[3] for c in sol_candles])
-    sol_high = max([c[2] for c in sol_candles])
-    sol_current = sol_candles[-1][4]
-    sol_entry = 73.62
-    sol_sl = 73.92
-    sol_tp = 72.46
-    
-    print(f"Current price: ${sol_current}")
-    if sol_high >= sol_sl:
-        print("STATUS: STOP LOSS HIT ❌")
-    elif sol_low <= sol_tp:
-        print("STATUS: TAKE PROFIT HIT 🎯")
-    elif sol_current < sol_entry:
-        print(f"STATUS: ACTIVE (FLOATING PROFIT 📈 +${sol_entry - sol_current:.2f} / coin)")
-    else:
-        print(f"STATUS: ACTIVE (FLOATING LOSS 📉 -${sol_current - sol_entry:.2f} / coin)")
+Aegis places no orders, so there is no position to report. What matters is
+whether the setups it called are working: did price reach the entry, and has it
+gone on to the target or the stop.
+"""
+import sys
 
-except Exception as e:
-    print(f"Error fetching data: {e}")
+sys.path.insert(0, ".")
+
+import db
+import execution
+from notifications.telegram_bot import fmt_price
+
+
+def _progress(trade: dict, price: float) -> str:
+    """Where price sits between the signal's stop and its target, in R."""
+    reference = trade.get("fill_price") or trade["entry"]
+    risk = abs(reference - trade["sl"])
+    if risk <= 0:
+        return "risk tidak valid"
+    if trade["direction"] == "long":
+        if price <= trade["sl"]:
+            return "STOP LOSS TERSENTUH"
+        if price >= trade["tp"]:
+            return "TAKE PROFIT TERSENTUH"
+        return f"berjalan ({(price - reference) / risk:+.2f}R)"
+    if price >= trade["sl"]:
+        return "STOP LOSS TERSENTUH"
+    if price <= trade["tp"]:
+        return "TAKE PROFIT TERSENTUH"
+    return f"berjalan ({(reference - price) / risk:+.2f}R)"
+
+
+def main():
+    signals = db.fetch_trade_journal("PENDING") + db.fetch_trade_journal("TRIGGERED")
+    if not signals:
+        print("Tidak ada sinyal aktif di journal.")
+    else:
+        print(f"=== {len(signals)} sinyal aktif ===")
+        for trade in signals:
+            price = execution.fetch_price(trade["pair"])
+            direction = "LONG" if trade["direction"] == "long" else "SHORT"
+            print(f"\n{trade['pair']} ({direction}) [{trade['status']}] {trade['tf_combo']}")
+            print(f"  Entry {fmt_price(trade['entry'])} | "
+                  f"SL {fmt_price(trade['sl'], trade['entry'])} | "
+                  f"TP {fmt_price(trade['tp'], trade['entry'])}")
+            if price is None:
+                print("  Harga tidak tersedia.")
+                continue
+            print(f"  Harga sekarang {fmt_price(price, trade['entry'])} — {_progress(trade, price)}")
+
+    summary = db.performance_summary()
+    if summary["trades"]:
+        print(f"\n=== Hasil tercatat ({summary['trades']} sinyal selesai) ===")
+        print(f"Win rate  : {summary['win_rate']:.1f}%")
+        print(f"Expectancy: {summary['expectancy_r']:+.2f}R")
+        print(f"Total     : {summary['total_r']:+.2f}R")
+    else:
+        print("\nBelum ada sinyal yang selesai — jalankan backtest untuk mengukur kualitas sinyal.")
+
+
+if __name__ == "__main__":
+    main()
