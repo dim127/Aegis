@@ -5,12 +5,21 @@
     "rate_limit": true,
     "binance": {
       "enabled": true,
+      "mode": "demo",
       "testnet": true,
       "api_key": "",
       "api_secret": ""
     }
   },
-  "smc_pairs": ["BTC", "ETH", "BNB", "SOL", "HYPE", "XRP", "LINK"],
+  "smc_pairs": [
+    "BTC",
+    "ETH",
+    "BNB",
+    "SOL",
+    "HYPE",
+    "XRP",
+    "LINK"
+  ],
   "smc": {
     "rr_target": 3.0,
     "atr_proximity": 2.0,

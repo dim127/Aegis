@@ -12,6 +12,7 @@ logger = logging.getLogger(__name__)
 CONFIG_PATH = Path(__file__).resolve().parent / "aegis_config.json"
 CREDENTIALS_PATH = Path(__file__).resolve().parent / "binance_credentials.json"
 TESTNET_CREDENTIALS_PATH = Path(__file__).resolve().parent / "binance_testnet_credentials.json"
+DEMO_CREDENTIALS_PATH = Path(__file__).resolve().parent / "binance_demo_credentials.json"
 
 EXCHANGE_CONFIG = {
     "binance_futures": {
@@ -32,14 +33,49 @@ def _load_config() -> dict:
         return {}
 
 
+TRADING_MODES = ("live", "testnet", "demo")
+
+
+def trading_mode() -> str:
+    """Which environment to trade against: live, testnet, or demo.
+
+    Binance runs two separate paper environments and they are not
+    interchangeable:
+
+    * testnet  -> testnet.binancefuture.com, keys from testnet.binancefuture.com
+    * demo     -> demo-fapi.binance.com, keys from demo.binance.com
+
+    ccxt refuses to combine them (enable_demo_trading raises when sandbox mode
+    is on), and a key issued by one environment is meaningless to the other.
+    Reads exchange.binance.mode, falling back to the legacy boolean
+    exchange.binance.testnet.
+    """
+    binance = _load_config().get("exchange", {}).get("binance", {})
+    mode = str(binance.get("mode", "")).strip().lower()
+    if mode in TRADING_MODES:
+        return mode
+    if mode:
+        logger.warning(f"Unknown exchange.binance.mode '{mode}', falling back")
+    return "testnet" if binance.get("testnet", False) else "live"
+
+
 def is_testnet() -> bool:
-    """True when aegis_config.json has exchange.binance.testnet = true."""
-    config = _load_config()
-    return bool(config.get("exchange", {}).get("binance", {}).get("testnet", False))
+    """True only for the sandbox environment (testnet.binancefuture.com)."""
+    return trading_mode() == "testnet"
+
+
+def is_demo() -> bool:
+    """True only for Binance Demo Trading (demo-fapi.binance.com)."""
+    return trading_mode() == "demo"
+
+
+def is_paper() -> bool:
+    """True when no real money is at stake. Drives DB isolation and guards."""
+    return trading_mode() != "live"
 
 
 def environment_name() -> str:
-    return "TESTNET" if is_testnet() else "LIVE"
+    return trading_mode().upper()
 
 
 def load_exchange_credentials() -> dict:
@@ -51,14 +87,23 @@ def load_exchange_credentials() -> dict:
     binance_credentials.json > aegis_config.json exchange.binance.
     """
     load_dotenv()
-    if is_testnet():
-        env_key = os.getenv("BINANCE_TESTNET_API_KEY", "").strip()
-        env_secret = os.getenv("BINANCE_TESTNET_SECRET", "").strip()
+    mode = trading_mode()
+    if mode != "live":
+        # Never fall through to live credentials: a paper mode with a real key
+        # silently pointed at the wrong host is how real money gets spent.
+        if mode == "demo":
+            env_names = ("BINANCE_DEMO_API_KEY", "BINANCE_DEMO_SECRET")
+            path = DEMO_CREDENTIALS_PATH
+        else:
+            env_names = ("BINANCE_TESTNET_API_KEY", "BINANCE_TESTNET_SECRET")
+            path = TESTNET_CREDENTIALS_PATH
+        env_key = os.getenv(env_names[0], "").strip()
+        env_secret = os.getenv(env_names[1], "").strip()
         if env_key and env_secret:
             return {"api_key": env_key, "api_secret": env_secret}
-        if TESTNET_CREDENTIALS_PATH.exists():
+        if path.exists():
             try:
-                with TESTNET_CREDENTIALS_PATH.open() as f:
+                with path.open() as f:
                     creds = json.load(f)
                 if creds.get("api_key") and creds.get("api_secret"):
                     return creds
@@ -103,9 +148,9 @@ def _create_exchange(
     creds = load_exchange_credentials()
     key = api_key or creds.get("api_key", "")
     secret = api_secret or creds.get("api_secret", "")
-    testnet = is_testnet()
+    mode = trading_mode()
 
-    cache_key = (name, key, testnet, tuple(sorted(kwargs.items())))
+    cache_key = (name, key, mode, tuple(sorted(kwargs.items())))
     cached = _EXCHANGE_CACHE.get(cache_key)
     if cached is not None:
         return cached
@@ -119,7 +164,7 @@ def _create_exchange(
     exchange = cfg["class"](exchange_params)
     if cfg.get("options"):
         exchange.options.update(cfg["options"])
-    if testnet:
+    if mode == "testnet":
         exchange.set_sandbox_mode(True)
         # ccxt raises NotSupported on every *private* futures endpoint while
         # sandbox mode is on (binance.py: the fapiPrivate branch), because
@@ -129,7 +174,14 @@ def _create_exchange(
         # testnet.binancefuture.com and the endpoints still respond, so this
         # opts out of the guard rather than working around it.
         exchange.options["disableFuturesSandboxWarning"] = True
-        logger.info("Exchange in SANDBOX/TESTNET mode (testnet.binancefuture.com)")
+        logger.info("Exchange in TESTNET mode (testnet.binancefuture.com)")
+    elif mode == "demo":
+        # Demo Trading is a different environment from the sandbox, not a
+        # variant of it — ccxt raises if sandbox mode is already on. Keys come
+        # from demo.binance.com/en/my/settings/api-management and a testnet key
+        # will not authenticate here.
+        exchange.enable_demo_trading(True)
+        logger.info("Exchange in DEMO mode (demo-fapi.binance.com)")
     _EXCHANGE_CACHE[cache_key] = exchange
     return exchange
 

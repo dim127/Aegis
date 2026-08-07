@@ -11,25 +11,36 @@ DB_PATH = os.path.join(DB_DIR, "aegis_cache.db")
 SIGNALS_DB_PATH = os.path.join(os.path.dirname(__file__), "aegis_signals.db")
 TESTNET_DB_PATH = os.path.join(DB_DIR, "aegis_cache_testnet.db")
 TESTNET_SIGNALS_PATH = os.path.join(os.path.dirname(__file__), "aegis_signals_testnet.db")
+DEMO_DB_PATH = os.path.join(DB_DIR, "aegis_cache_demo.db")
+DEMO_SIGNALS_PATH = os.path.join(os.path.dirname(__file__), "aegis_signals_demo.db")
+
+
+def _trading_mode() -> str:
+    try:
+        from execution import trading_mode
+        return trading_mode()
+    except Exception:
+        return "live"
 
 
 def _testnet_mode() -> bool:
-    try:
-        from execution import is_testnet
-        return is_testnet()
-    except Exception:
-        return False
+    """Kept for callers that only care whether this is a paper environment."""
+    return _trading_mode() != "live"
 
 
 def _active_paths() -> tuple[str, str]:
     """Return (cache_db_path, signals_db_path) for the current mode.
 
-    Testnet mode uses separate files so test and live data never mix.
-    Callers that monkeypatch DB_PATH/SIGNALS_DB_PATH (tests) are honoured in
-    live mode because the module attributes are read at call time.
+    Each environment gets its own files. Testnet and demo are different
+    exchanges with different fills, so blending their journals would make any
+    realised-R summary meaningless — and neither belongs in the live journal.
+    Module attributes are read at call time so tests can redirect them.
     """
-    if _testnet_mode():
+    mode = _trading_mode()
+    if mode == "testnet":
         return TESTNET_DB_PATH, TESTNET_SIGNALS_PATH
+    if mode == "demo":
+        return DEMO_DB_PATH, DEMO_SIGNALS_PATH
     return DB_PATH, SIGNALS_DB_PATH
 
 

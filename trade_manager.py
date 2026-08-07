@@ -337,9 +337,10 @@ def main() -> None:
     args = parser.parse_args()
 
     mode = execution.environment_name()
-    if execution.is_testnet():
-        logger.info(f"trade_manager running in {mode} mode")
-        logger.info("Using TESTNET futures + isolated test DBs (aegis_cache_testnet.db)")
+    if execution.is_paper():
+        host = "demo-fapi.binance.com" if execution.is_demo() else "testnet.binancefuture.com"
+        logger.info(f"trade_manager running in {mode} mode ({host})")
+        logger.info("Paper environment with isolated DBs — no real money at stake")
     elif not args.live:
         logger.error(
             "Refusing to run against LIVE Binance without --live. "

@@ -21,4 +21,6 @@ def use_temp_dbs() -> str:
     db.SIGNALS_DB_PATH = os.path.join(tmp, "signals.db")
     db.TESTNET_DB_PATH = os.path.join(tmp, "cache_testnet.db")
     db.TESTNET_SIGNALS_PATH = os.path.join(tmp, "signals_testnet.db")
+    db.DEMO_DB_PATH = os.path.join(tmp, "cache_demo.db")
+    db.DEMO_SIGNALS_PATH = os.path.join(tmp, "signals_demo.db")
     return tmp
