@@ -254,8 +254,43 @@ def fetch_signals(limit: int = 100) -> list[dict]:
                "entry", "sl", "tp", "rr", "confluence"]
     return [dict(zip(columns, row)) for row in rows]
 
-def log_signal(setup: dict):
-    """Queue a valid setup as a PENDING journal row (deduplicated)."""
+def expire_stale_signals(ttl_minutes: int = 15) -> int:
+    """Retire PENDING signals older than the TTL. Returns how many were retired.
+
+    A setup describes a specific moment: an unmitigated FVG, a fresh structure
+    break, price not yet at entry. Hours later none of that is still true, so a
+    stale PENDING row is not a live signal — it is a record that should be
+    closed out.
+
+    This also keeps the dedup below honest. Dedup suppresses a repeat signal
+    while one is already PENDING for the same pair/combo/direction; without
+    expiry that suppression becomes permanent and the journal silently stops
+    recording anything new for that combination.
+    """
+    cache_db, _ = _active_paths()
+    _ensure_db(cache_db)
+    cutoff = (datetime.now(timezone.utc) - timedelta(minutes=ttl_minutes)).strftime(
+        "%Y-%m-%d %H:%M:%S"
+    )
+    conn = sqlite3.connect(cache_db)
+    cursor = conn.execute(
+        "UPDATE trade_journal SET status = 'EXPIRED' "
+        "WHERE status = 'PENDING' AND timestamp < ?",
+        (cutoff,),
+    )
+    expired = cursor.rowcount or 0
+    conn.commit()
+    conn.close()
+    return expired
+
+
+def log_signal(setup: dict, ttl_minutes: int = 15):
+    """Queue a valid setup as a PENDING journal row (deduplicated).
+
+    Stale rows are retired first so dedup compares against signals that are
+    still live, not against history.
+    """
+    expire_stale_signals(ttl_minutes)
     cache_db, _ = _active_paths()
     _ensure_db(cache_db)
     conn = sqlite3.connect(cache_db)

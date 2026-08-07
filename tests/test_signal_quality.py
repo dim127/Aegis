@@ -12,6 +12,9 @@ from unittest.mock import patch
 import pandas as pd
 
 import db
+from tests.dbtemp import use_temp_dbs
+
+import db
 import execution
 from strategy.aegis_strategy import AegisSMCStrategy
 
@@ -109,3 +112,52 @@ class TickQuantizationTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SignalExpiryTests(unittest.TestCase):
+    """A stale PENDING row must not silently mute future signals.
+
+    Expiry used to live in trade_manager.py. When execution was removed, nothing
+    retired PENDING rows any more — and because dedup suppresses a repeat while
+    one is PENDING, that suppression became permanent: the journal stopped
+    recording new signals for any pair/combo/direction it had already seen.
+    """
+
+    def setUp(self):
+        use_temp_dbs()
+        self.setup = {
+            "pair": "BTC/USDT:USDT", "tf_combo": "15m/1m", "direction": "long",
+            "entry": 100.0, "sl": 95.0, "tp": 115.0, "rr": 3.0,
+        }
+
+    def _age_rows(self, hours):
+        import sqlite3
+        old = (pd.Timestamp.now(tz="UTC") - pd.Timedelta(hours=hours)).strftime("%Y-%m-%d %H:%M:%S")
+        conn = sqlite3.connect(db._active_paths()[0])
+        conn.execute("UPDATE trade_journal SET timestamp = ?", (old,))
+        conn.commit()
+        conn.close()
+
+    def test_stale_pending_is_expired(self):
+        db.log_signal(self.setup)
+        self._age_rows(3)
+        self.assertEqual(db.expire_stale_signals(15), 1)
+        self.assertEqual(len(db.fetch_trade_journal("PENDING")), 0)
+        self.assertEqual(len(db.fetch_trade_journal("EXPIRED")), 1)
+
+    def test_fresh_pending_survives(self):
+        db.log_signal(self.setup)
+        self.assertEqual(db.expire_stale_signals(15), 0)
+        self.assertEqual(len(db.fetch_trade_journal("PENDING")), 1)
+
+    def test_dedup_suppresses_only_while_the_signal_is_live(self):
+        self.assertTrue(db.log_signal(self.setup))
+        self.assertFalse(db.log_signal(self.setup), "repeat while live must dedup")
+        self._age_rows(3)
+        self.assertTrue(db.log_signal(self.setup),
+                        "once the old signal expires, a new one must be recorded")
+        self.assertEqual(len(db.fetch_trade_journal("PENDING")), 1)
+
+    def test_a_different_direction_is_never_suppressed(self):
+        db.log_signal(self.setup)
+        self.assertTrue(db.log_signal({**self.setup, "direction": "short"}))
