@@ -56,6 +56,7 @@ class Position:
         self.exit_ts = None
         self.r_multiple = None
         self.path = []
+        self.path_len_at_exit = None
 
     @property
     def signal_pos(self) -> int:
@@ -114,6 +115,10 @@ class Position:
         self.r_multiple = r_multiple
         self.exit_pos = pos
         self.exit_ts = ltf.index[pos]
+        # Freeze how much of the path belongs to the trade itself. extend_win_paths
+        # appends bars from *after* this exit so the RR sweep can re-test a 3R win
+        # against a 4R target; those bars must never reach the excursion metrics.
+        self.path_len_at_exit = len(self.path)
 
     def expire(self, ltf):
         self.outcome = "expired"
@@ -134,13 +139,19 @@ class Position:
         if self.outcome is None:
             self.outcome = "open"
             self.exit_ts = ltf.index[-1]
-        if self.filled and self.path:
+        # Excursion is a property of the open position, so it is measured only
+        # over the bars the trade was actually live for. Using the full path let
+        # a winner's post-exit collapse count against it — which is how winners
+        # ended up reporting a median MAE of -1.07R, having supposedly traded
+        # through the very stop that would have made them losers.
+        trade_path = self.path[:self.path_len_at_exit] if self.path_len_at_exit else self.path
+        if self.filled and trade_path:
             if self.direction == "long":
-                mfe = max((h - self.entry) / self.risk for h, _ in self.path)
-                mae = min((l - self.entry) / self.risk for _, l in self.path)
+                mfe = max((h - self.entry) / self.risk for h, _ in trade_path)
+                mae = min((l - self.entry) / self.risk for _, l in trade_path)
             else:
-                mfe = max((self.entry - l) / self.risk for _, l in self.path)
-                mae = min((self.entry - h) / self.risk for h, _ in self.path)
+                mfe = max((self.entry - l) / self.risk for _, l in trade_path)
+                mae = min((self.entry - h) / self.risk for h, _ in trade_path)
             self.mfe_r = round(mfe, 4)
             self.mae_r = round(mae, 4)
         else:
