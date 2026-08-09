@@ -35,6 +35,9 @@ SIGNAL_COLUMNS = [
     # Measured, not gated on: these exist so their edge can be evaluated
     # against outcomes before anything is filtered by them.
     "ls_long_pct", "oi_change_24h_pct", "funding_bp", "funding_z",
+    # Two readings of the liquidation-cluster factor, and the stricter FVG
+    # timing rule. Recorded so each can be scored before any becomes a gate.
+    "cluster_side_sweep", "cluster_side_draw", "fvg_after_confirm", "soft_hits",
 ]
 # Open interest is only available at 4h resolution over a 30-day window, so it
 # is a regime measure (building vs unwinding), not per-sweep confirmation.
@@ -142,6 +145,10 @@ def scan_pair_combo(args):
                 "oi_change_24h_pct": oi_series.change_pct(ts_ms, OI_LOOKBACK_MS),
                 "funding_bp": funding_series.as_of(ts_ms),
                 "funding_z": funding_series.zscore_as_of(ts_ms),
+                "cluster_side_sweep": setup.get("cluster_side_sweep"),
+                "cluster_side_draw": setup.get("cluster_side_draw"),
+                "fvg_after_confirm": setup.get("fvg_after_confirm"),
+                "soft_hits": setup.get("soft_hits"),
             })
     return signals
 

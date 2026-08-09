@@ -193,7 +193,30 @@ def is_impulsive_candle(row, atr_val=None) -> bool:
     return False
 
 
-def detect_structure(df: pd.DataFrame, window: int = 15, trend_window: int | None = None) -> dict:
+def _swings_for_prefix(full_high: pd.Series, full_low: pd.Series, end: int, window: int):
+    """Swing flags for df[:end], derived from the full-frame computation.
+
+    A fractal swing at position i needs `window` bars on either side, and
+    swing_highs only scans range(window, n - window). So within a prefix of
+    length `end`, position i is marked exactly when the full frame marks it AND
+    i <= end - 1 - window. Everything nearer the cut is unconfirmable there.
+
+    That equivalence is what lets the backward search compute swings once
+    instead of once per candidate, and it is asserted directly in
+    tests/test_structure_perf.py rather than assumed.
+    """
+    cutoff = end - 1 - window
+    index = full_high.index[:end]
+    high = np.array(full_high.to_numpy()[:end], dtype=bool)
+    low = np.array(full_low.to_numpy()[:end], dtype=bool)
+    keep = max(cutoff + 1, 0)
+    high[keep:] = False
+    low[keep:] = False
+    return pd.Series(high, index=index), pd.Series(low, index=index)
+
+
+def detect_structure(df: pd.DataFrame, window: int = 15, trend_window: int | None = None,
+                     swings: tuple | None = None, atr_value: float | None = None) -> dict:
     """Classify the last candle's break of recent structure.
 
     Two different lookbacks are needed and conflating them was a real defect:
@@ -214,32 +237,59 @@ def detect_structure(df: pd.DataFrame, window: int = 15, trend_window: int | Non
             "last_swing_high": None, "last_swing_low": None,
             "event": None,
         }
-    atr_vals = atr(df, period=14)
-    atr_val = atr_vals.iloc[-1] if not atr_vals.empty else 0
+    # Only the final ATR reading is used. Recomputing the whole rolling mean per
+    # candidate was a quarter of this function's runtime; a backward scan can
+    # pass the value in. Rolling mean at position i depends only on i-13..i, so
+    # the prefix value equals the full-frame value there — exact, not an
+    # approximation.
+    if atr_value is not None:
+        atr_val = atr_value
+    else:
+        atr_vals = atr(df, period=14)
+        atr_val = atr_vals.iloc[-1] if not atr_vals.empty else 0
     recent = df.iloc[-window:]
     last_candle = df.iloc[-1]
-    sh = swing_highs(df, 3)
-    sl = swing_lows(df, 3)
-    sh_idx = sh[sh].index[sh[sh].index >= recent.index[0]]
-    sl_idx = sl[sl].index[sl[sl].index >= recent.index[0]]
-    last_sh_idx = sh_idx[-1] if len(sh_idx) else None
-    last_sl_idx = sl_idx[-1] if len(sl_idx) else None
-    last_sh = float(df.loc[last_sh_idx, "High"]) if last_sh_idx is not None else float(recent.iloc[:-1]["High"].max())
-    last_sl = float(df.loc[last_sl_idx, "Low"]) if last_sl_idx is not None else float(recent.iloc[:-1]["Low"].min())
+    # `swings` lets a caller hand in an already-computed pair for this exact
+    # frame, so a backward search does not recompute them per candidate.
+    if swings is not None:
+        sh, sl = swings
+    else:
+        sh = swing_highs(df, 3)
+        sl = swing_lows(df, 3)
+    # Positional numpy rather than pandas boolean masking. The mask-then-compare
+    # pattern ran four times per call and dominated the remaining runtime in
+    # check_array_indexer; positions give the same answers without the dtype
+    # dispatch on every lookup.
+    n = len(df)
+    highs = df["High"].to_numpy(float)
+    lows = df["Low"].to_numpy(float)
+    sh_pos = np.flatnonzero(sh.to_numpy())
+    sl_pos = np.flatnonzero(sl.to_numpy())
+
+    recent_start = n - min(window, n)
+    sh_recent = sh_pos[sh_pos >= recent_start]
+    sl_recent = sl_pos[sl_pos >= recent_start]
+    last_sh_idx = df.index[sh_recent[-1]] if len(sh_recent) else None
+    last_sl_idx = df.index[sl_recent[-1]] if len(sl_recent) else None
+    last_sh = (float(highs[sh_recent[-1]]) if len(sh_recent)
+               else float(recent.iloc[:-1]["High"].max()))
+    last_sl = (float(lows[sl_recent[-1]]) if len(sl_recent)
+               else float(recent.iloc[:-1]["Low"].min()))
 
     # Trend context comes from the wider window; the break level above does not.
-    trend_start = df.index[-min(trend_window, len(df))]
-    t_sh_idx = sh[sh].index[sh[sh].index >= trend_start]
-    t_sl_idx = sl[sl].index[sl[sl].index >= trend_start]
+    trend_start = n - min(trend_window, n)
+    t_sh = sh_pos[sh_pos >= trend_start]
+    t_sl = sl_pos[sl_pos >= trend_start]
+    has_two = len(t_sh) >= 2 and len(t_sl) >= 2
     bullish_trend = (
-        len(t_sh_idx) >= 2 and len(t_sl_idx) >= 2
-        and df.loc[t_sh_idx[-1], "High"] > df.loc[t_sh_idx[-2], "High"]
-        and df.loc[t_sl_idx[-1], "Low"] > df.loc[t_sl_idx[-2], "Low"]
+        has_two
+        and highs[t_sh[-1]] > highs[t_sh[-2]]
+        and lows[t_sl[-1]] > lows[t_sl[-2]]
     )
     bearish_trend = (
-        len(t_sh_idx) >= 2 and len(t_sl_idx) >= 2
-        and df.loc[t_sh_idx[-1], "High"] < df.loc[t_sh_idx[-2], "High"]
-        and df.loc[t_sl_idx[-1], "Low"] < df.loc[t_sl_idx[-2], "Low"]
+        has_two
+        and highs[t_sh[-1]] < highs[t_sh[-2]]
+        and lows[t_sl[-1]] < lows[t_sl[-2]]
     )
     bullish_break = last_candle["Close"] > last_sh and is_impulsive_candle(last_candle, atr_val)
     bearish_break = last_candle["Close"] < last_sl and is_impulsive_candle(last_candle, atr_val)
@@ -311,8 +361,19 @@ def latest_structure_event(
     if len(df) < minimum_length:
         return detect_structure(df, window)
     earliest = max(minimum_length - 1, len(df) - max_bars_back)
+    # Swings are a property of the frame, not of where the search happens to be
+    # looking, so compute them once and derive each prefix from them. Recomputing
+    # per candidate meant up to 30 full fractal passes and 30 rounds of pandas
+    # boolean indexing for a single call.
+    full_high = swing_highs(df, 3)
+    full_low = swing_lows(df, 3)
+    full_atr = atr(df, period=14).to_numpy()
     for end in range(len(df), earliest, -1):
-        result = detect_structure(df.iloc[:end], window)
+        result = detect_structure(
+            df.iloc[:end], window,
+            swings=_swings_for_prefix(full_high, full_low, end, 3),
+            atr_value=float(full_atr[end - 1]),
+        )
         event = result["event"]
         if event is not None and event["direction"] == direction:
             return result

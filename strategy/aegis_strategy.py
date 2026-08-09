@@ -20,6 +20,12 @@ class AegisSMCStrategy:
     DEFAULT_RR_TARGET = 3.0
     DEFAULT_ATR_PROXIMITY = 2.0
     DEFAULT_MIN_CONFLUENCE = 3
+    # Structure, FVG and sweep are mandatory, and each contributes exactly one
+    # reason — so total confluence is >= 3 before any threshold is consulted,
+    # which is why min_confluence could never reject anything. Only the soft
+    # factors carry information a threshold can act on.
+    HARD_FACTORS = ("structure", "fvg", "sweep")
+    SOFT_FACTORS = ("ob", "breakout", "long_short", "cluster")
     DEFAULT_COSTS = {
         "maker_fee_pct": 0.02,
         "taker_fee_pct": 0.04,
@@ -42,6 +48,11 @@ class AegisSMCStrategy:
         self.rr_target = float(smc_config.get("rr_target", self.DEFAULT_RR_TARGET))
         self.atr_proximity = float(smc_config.get("atr_proximity", self.DEFAULT_ATR_PROXIMITY))
         self.min_confluence = int(smc_config.get("min_confluence", self.DEFAULT_MIN_CONFLUENCE))
+        # Defaults to 0: confluence scored p=1.000 against outcomes over 79
+        # trades, so a tighter gate would cut signal volume with no evidence of
+        # better quality. Making the knob work is correctness; turning it up
+        # without data would be guessing.
+        self.min_soft_confluence = int(smc_config.get("min_soft_confluence", 0))
 
         market_cfg = smc_config.get("market", {})
         self.long_short_enabled = bool(market_cfg.get("long_short_enabled", True))
@@ -80,6 +91,28 @@ class AegisSMCStrategy:
     @staticmethod
     def _normalize_pair(pair: str) -> str:
         return pair if "/" in pair else f"{pair}/USDT:USDT"
+
+    @classmethod
+    def _count_soft(cls, factor_names) -> int:
+        """How many optional factors fired, ignoring the mandatory three."""
+        return sum(1 for name in factor_names if name in cls.SOFT_FACTORS)
+
+    @classmethod
+    def _event_confirmed_at(cls, event: dict | None, timeframe: str):
+        """When a structure event became known, not when its candle opened.
+
+        Events carry the candle's opening timestamp, but a break is only
+        confirmed once that candle closes. Comparing the opening timestamp
+        against LTF timestamps let a gap forming *inside* the HTF candle — while
+        the break was still unconfirmed — count as having formed after it.
+
+        On a 4h anchor that window is up to four hours of look-ahead.
+        """
+        if event is None:
+            return None
+        opened = event["index"]
+        duration = cls.TIMEFRAME_DURATIONS.get(timeframe)
+        return opened + duration if duration is not None else opened
 
     @staticmethod
     def _fmt(price: float) -> str:
@@ -188,11 +221,33 @@ class AegisSMCStrategy:
         # 3. FVG on 1m
         best_fvg = None
         reason_fvg = None
+        # Timed by the event candle's *open*, deliberately.
+        #
+        # This looks like a cross-timeframe hazard and is not one. _ohlcv_to_df
+        # drops the still-forming candle, so an HTF event always comes from a
+        # candle that has already closed — there is no look-ahead to fix.
+        #
+        # Switching to the confirmation time (see _event_confirmed_at) would
+        # exclude any LTF gap formed inside the HTF candle. In SMC that gap is
+        # usually created *by* the displacement that broke structure, so
+        # excluding it would drop the most canonical entry of all. Which
+        # convention performs better is an empirical question, not an obvious
+        # one: both are exported to the backtest as fvg_after_open and
+        # fvg_after_confirm so factor_edge can settle it.
         structure_events = [
             event for event in [structure_htf["event"], structure_ltf["event"]]
             if event is not None and event["direction"] == direction
         ]
         structure_time = max((event["index"] for event in structure_events), default=None)
+        structure_confirm_time = max(
+            (t for t in (
+                self._event_confirmed_at(event, tf)
+                for event, tf in ((structure_htf["event"], tf_htf),
+                                  (structure_ltf["event"], tf_ltf))
+                if event is not None and event["direction"] == direction
+            ) if t is not None),
+            default=None,
+        )
         if bull_dir:
             sorted_fvgs = sorted(fvg_below, key=lambda x: x["gap_high"], reverse=True)
             if sorted_fvgs:
@@ -251,18 +306,45 @@ class AegisSMCStrategy:
                     f"{ls['short_pct']:.1f}%S (crowded {crowd}, supports {direction})"
                 )
 
-        # 8. Liquidation cluster in the direction of travel, near the entry
+        # 8. Liquidation cluster near the entry.
+        #
+        # Which side should count is genuinely contested, and the code used to
+        # contradict its own comment, so both readings are computed and only one
+        # is scored until data settles it:
+        #
+        #   sweep    (current) long looks below — sell-side liquidity gets swept
+        #            first, then price reverses up. Matches the mandatory
+        #            liquidity-sweep gate.
+        #   draw     long looks above — clusters are magnets, price is drawn
+        #            toward the pool it will run. The classic ICT reading.
+        #
+        # cluster_side_sweep / cluster_side_draw go to the backtest so
+        # factor_edge can decide. Guessing here is how factor 7 got its
+        # direction baked in unmeasured.
         reason_cluster = None
+        cluster_sweep = cluster_draw = None
         if market_ctx is not None and market_ctx.get("clusters") and best_fvg is not None:
             clusters = market_ctx["clusters"]
-            target = clusters["nearest_below"] if bull_dir else clusters["nearest_above"]
-            if target is not None and best_fvg["gap_mid"] > 0:
-                dist_pct = abs(target["price"] - best_fvg["gap_mid"]) / best_fvg["gap_mid"] * 100.0
-                if dist_pct <= self.cluster_proximity_pct:
-                    reason_cluster = (
-                        f"Liquidation cluster ${self._fmt(target['price'])} "
-                        f"({dist_pct:.1f}% dari entry, {target['strength']})"
-                    )
+            entry_price = best_fvg["gap_mid"]
+
+            def _within(target):
+                if target is None or entry_price <= 0:
+                    return None
+                dist = abs(target["price"] - entry_price) / entry_price * 100.0
+                return (dist, target) if dist <= self.cluster_proximity_pct else None
+
+            below, above = _within(clusters["nearest_below"]), _within(clusters["nearest_above"])
+            sweep_hit = below if bull_dir else above
+            draw_hit = above if bull_dir else below
+            cluster_sweep = sweep_hit is not None
+            cluster_draw = draw_hit is not None
+
+            if sweep_hit is not None:
+                dist_pct, target = sweep_hit
+                reason_cluster = (
+                    f"Liquidation cluster ${self._fmt(target['price'])} "
+                    f"({dist_pct:.1f}% dari entry, {target['strength']})"
+                )
 
         # Mandatory: structure shift (15m CHOCH/BOS OR 1m CHOCH).
         has_structure = struct_htf or confirm_ltf
@@ -280,13 +362,20 @@ class AegisSMCStrategy:
             return {"valid": False, "reason": "No liquidity sweep before structure shift",
                     "reasons": [r for r in [reason_htf, reason_ltf, reason_fvg] if r], "confluence": 0}
 
-        reasons = [r for r in [reason_htf, reason_ltf, reason_fvg, reason_ob, reason_breakout, reason_sweep, reason_long_short, reason_cluster] if r]
+        tagged = [
+            ("structure", reason_htf), ("structure", reason_ltf), ("fvg", reason_fvg),
+            ("ob", reason_ob), ("breakout", reason_breakout), ("sweep", reason_sweep),
+            ("long_short", reason_long_short), ("cluster", reason_cluster),
+        ]
+        reasons = [text for _, text in tagged if text]
         confluence = len(reasons)
+        soft_hits = self._count_soft(name for name, text in tagged if text)
 
-        if confluence < self.min_confluence:
+        if soft_hits < self.min_soft_confluence:
             return {"valid": False,
-                    "reason": f"Confluence too low: {confluence}/8 (need {self.min_confluence})",
-                    "reasons": reasons, "confluence": confluence}
+                    "reason": (f"Soft confluence too low: {soft_hits}/{len(self.SOFT_FACTORS)} "
+                               f"(need {self.min_soft_confluence})"),
+                    "reasons": reasons, "confluence": confluence, "soft_hits": soft_hits}
 
         sl = liquidity_inflection(df_ltf, direction, before=best_fvg["index"])
         if sl is None:
@@ -359,11 +448,20 @@ class AegisSMCStrategy:
             "risk": risk,
             "risk_pct": round(risk_pct, 3),
             "confluence": confluence,
+            "soft_hits": soft_hits,
             "reasons": reasons,
             "timestamp": df_ltf.index[-1],
             "structure_htf": structure_htf["event"],
             "structure_ltf": structure_ltf["event"],
             "fvg_timestamp": best_fvg["index"],
+            # Measured, not gated on: would this setup still qualify under the
+            # stricter rule that the gap must form after the HTF candle closes?
+            "cluster_side_sweep": cluster_sweep,
+            "cluster_side_draw": cluster_draw,
+            "fvg_after_confirm": bool(
+                structure_confirm_time is None
+                or best_fvg["index"] >= structure_confirm_time
+            ),
             "ob_timestamp": associated_ob["index"] if associated_ob else None,
             "htf_bias_text": htf_bias_text,
             "ltf_conf_text": ltf_conf_text,

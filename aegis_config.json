@@ -1,5 +1,13 @@
 {
-  "smc_pairs": ["BTC", "ETH", "BNB", "SOL", "HYPE", "XRP", "LINK"],
+  "smc_pairs": [
+    "BTC",
+    "ETH",
+    "BNB",
+    "SOL",
+    "HYPE",
+    "XRP",
+    "LINK"
+  ],
   "smc": {
     "rr_target": 3.0,
     "atr_proximity": 2.0,
@@ -24,7 +32,9 @@
   "signal_ttl_minutes": 15,
   "telegram": {
     "scan_interval_minutes": 1,
+    "heartbeat_interval_minutes": 15,
     "notify_on_scan": true,
-    "notify_on_error": true
+    "notify_on_error": true,
+    "repeat_interval_minutes": 60
   }
 }
