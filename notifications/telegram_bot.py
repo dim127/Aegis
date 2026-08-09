@@ -30,34 +30,107 @@ def format_setup_message(setup: dict) -> str:
     ts = setup.get("timestamp", datetime.now())
     ts_str = str(ts) if not hasattr(ts, "strftime") else ts.strftime(DATE_FMT)
 
+    entry = setup["entry"]
     lines = [
-        f"{emoji} *{base} [{setup.get('tf_combo', '15m/1m')}] | {direction}*",
-        f"```",
-        f"Entry    ${fmt_price(setup['entry'])}",
-        f"SL       ${fmt_price(setup['sl'], setup['entry'])}",
-        f"TP       ${fmt_price(setup['tp'], setup['entry'])}",
-        f"RR       1:{setup['rr']:.2f} (net 1:{setup.get('rr_net', setup['rr']):.2f})",
-        f"Risk     ${fmt_price(setup['risk'], setup['entry'])} ({setup.get('risk_pct', 0):.2f}%)",
-        f"Confl    {setup['confluence']}/8",
-        f"```",
-        f"",
-        f"*HTF:* {setup.get('htf_bias_text', 'N/A')}",
-        f"*LTF:* {setup.get('ltf_conf_text', 'N/A')}",
-        f"*Action:* {setup.get('action', 'N/A')}",
-        f"",
+        f"{emoji} *{base} {direction}* · {setup.get('tf_combo', '15m/1m')}",
+        "```",
+        f"Entry  {fmt_price(entry)}",
+        f"SL     {fmt_price(setup['sl'], entry)}   ({setup.get('risk_pct', 0):.2f}%)",
+        f"TP     {fmt_price(setup['tp'], entry)}   ({setup['rr']:.0f}R)",
+        "```",
+        f"Konfluensi {setup['confluence']}/8 · RR bersih 1:{setup.get('rr_net', setup['rr']):.2f}",
+        "",
     ]
 
-    reasons = setup.get("reasons")
-    if reasons:
-        lines.append(f"*Confluence Factors:*")
-        for i, r in enumerate(reasons, 1):
-            lines.append(f"  {i}. {r}")
-        lines.append("")
+    for reason in setup.get("reasons") or []:
+        lines.append(f"• {reason}")
 
-    lines.extend(format_market_context(setup))
+    context_line = format_context_line(setup)
+    if context_line:
+        lines += ["", context_line]
 
-    lines.append(f"_Scan: {ts_str}_")
+    lines += ["", f"_{ts_str}_"]
     return "\n".join(lines)
+
+
+def format_context_line(setup: dict) -> str:
+    """Market context as one scannable line instead of a block.
+
+    The full breakdown was accurate and unreadable on a phone. Everything here
+    is observed data and none of it filters anything — it is there to inform the
+    decision, so it has to be glanceable to be worth sending at all.
+    """
+    ctx = setup.get("context") or {}
+    if not ctx:
+        return ""
+
+    parts = []
+    oi = ctx.get("open_interest")
+    if oi is not None:
+        change = ctx.get("oi_change_24h_pct")
+        suffix = f" {change:+.1f}%" if change is not None else ""
+        parts.append(f"OI {oi/1000:.0f}K{suffix}")
+    if ctx.get("funding_bp") is not None:
+        parts.append(f"Funding {ctx['funding_bp']:+.2f}bp")
+    if ctx.get("volume_ratio") is not None:
+        parts.append(f"Vol {ctx['volume_ratio']:.2f}x")
+    liq = ctx.get("liquidity") or {}
+    if liq.get("bid_share") is not None:
+        side = "bid" if liq["bid_share"] > 0.5 else "ask"
+        parts.append(f"Book {liq['bid_share']*100:.0f}% {side}")
+    return "_" + " · ".join(parts) + "_" if parts else ""
+
+
+def format_heartbeat(report: dict) -> str:
+    """Periodic status of every live signal: green still valid, red finished.
+
+    Sent on a timer so silence is never ambiguous — no message would otherwise
+    mean the same thing whether nothing changed or the bot had died.
+    """
+    now = datetime.now().strftime("%H:%M")
+    valid = report.get("valid") or []
+    invalid = report.get("invalid") or []
+
+    if not valid and not invalid:
+        return f"\U0001f4e1 *Heartbeat* {now}\n_Tidak ada sinyal aktif._"
+
+    lines = [f"\U0001f4e1 *Heartbeat* {now}"]
+
+    if valid:
+        lines += ["", f"\U0001f7e2 *Masih valid* ({len(valid)})"]
+        for s in valid:
+            entry = s["entry"]
+            progress = s.get("progress_r")
+            if s.get("status") == "TRIGGERED":
+                state = f"berjalan {progress:+.2f}R" if progress is not None else "berjalan"
+            else:
+                state = "menunggu entry"
+            lines.append(
+                f"  {_side(s)} *{_base(s)}* {s.get('tf_combo', '')} · {state}"
+            )
+            lines.append(
+                f"     harga {fmt_price(s['price'], entry)} · entry {fmt_price(entry)}"
+            )
+
+    if invalid:
+        lines += ["", f"\U0001f534 *Tidak valid* ({len(invalid)})"]
+        for s in invalid:
+            realized = s.get("realized_r")
+            tail = f" · {realized:+.2f}R" if realized is not None else ""
+            lines.append(
+                f"  {_side(s)} *{_base(s)}* {s.get('tf_combo', '')} · "
+                f"{s.get('reason', s.get('status', '?'))}{tail}"
+            )
+
+    return "\n".join(lines)
+
+
+def _base(signal: dict) -> str:
+    return str(signal.get("pair", "?")).split("/")[0]
+
+
+def _side(signal: dict) -> str:
+    return "LONG " if signal.get("direction") == "long" else "SHORT"
 
 
 def format_market_context(setup: dict) -> list:
@@ -104,19 +177,13 @@ def format_market_context(setup: dict) -> list:
 
 
 def format_no_trade_message() -> str:
-    now = datetime.now().strftime(DATE_FMT)
-    return (
-        "\u274c *No Trade* \u2014 No valid SMC setup found.\n"
-        f"_Scanned: {now}_"
-    )
+    return f"\u2014 Tidak ada setup. _{datetime.now().strftime('%H:%M')}_"
 
 
 def format_scan_banner(num_setups: int) -> str:
-    now = datetime.now().strftime(DATE_FMT)
-    return (
-        f"\U0001f50d *Aegis V4 \u2014 SMC Scan* ({now})\n"
-        f"Setups: {num_setups}"
-    )
+    now = datetime.now().strftime("%H:%M")
+    label = "setup" if num_setups == 1 else "setup"
+    return f"\U0001f50d *{num_setups} {label} ditemukan* \u00b7 {now}"
 
 
 def format_status_message() -> str:
@@ -164,12 +231,12 @@ def format_error_message(error: str) -> str:
 
 def format_help_message(interval: int) -> str:
     return (
-        "\U0001f916 *Aegis V4 \u2014 Commands*\n\n"
-        "/scan \u2014 Run SMC scan immediately\n"
-        "/status \u2014 Show open positions & status\n"
-        "/help \u2014 Show this help\n\n"
-        f"Auto-scan every {interval} min.\n"
-        "*SMC Rules:* 3/8 confluence, 1:3 RR, limit order at FVG"
+        "\U0001f916 *Aegis*\n\n"
+        "/scan \u2014 pindai sekarang\n"
+        "/status \u2014 sinyal aktif\n"
+        "/help \u2014 bantuan ini\n\n"
+        f"Scan otomatis tiap {interval} menit, heartbeat tiap 15 menit.\n\n"
+        "_Aegis memberi sinyal, tidak mengeksekusi order._"
     )
 
 

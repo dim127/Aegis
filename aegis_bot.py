@@ -15,6 +15,7 @@ from telegram.ext import Application, CommandHandler, ContextTypes
 
 sys.path.insert(0, os.path.dirname(__file__))
 from strategy.aegis_strategy import AegisSMCStrategy
+import signal_monitor
 from notifications.telegram_bot import (
     format_setup_message,
     format_no_trade_message,
@@ -23,6 +24,7 @@ from notifications.telegram_bot import (
     format_status_message,
     format_help_message,
     format_start_message,
+    format_heartbeat,
 )
 
 logging.basicConfig(
@@ -46,6 +48,7 @@ def load_config():
 
 CONFIG = load_config()
 SCAN_INTERVAL = CONFIG.get("telegram", {}).get("scan_interval_minutes", 15)
+HEARTBEAT_INTERVAL = CONFIG.get("telegram", {}).get("heartbeat_interval_minutes", 15)
 
 strategy = AegisSMCStrategy()
 
@@ -82,6 +85,31 @@ async def perform_scan(context: ContextTypes.DEFAULT_TYPE, is_manual=False):
             )
         except Exception:
             logger.exception("Failed to send error notification")
+
+
+async def perform_heartbeat(context: ContextTypes.DEFAULT_TYPE):
+    """Report which live signals still stand and which have resolved.
+
+    Sent on a timer rather than only on change, so silence is never ambiguous:
+    without it, "nothing happened" and "the bot died" look identical.
+    """
+    try:
+        report = await asyncio.get_event_loop().run_in_executor(
+            None, signal_monitor.check_all
+        )
+        if not report["valid"] and not report["invalid"]:
+            return
+        await context.bot.send_message(
+            chat_id=CHAT_ID, text=format_heartbeat(report), parse_mode="Markdown"
+        )
+    except Exception as e:
+        logger.exception("Heartbeat failed")
+        try:
+            await context.bot.send_message(
+                chat_id=CHAT_ID, text=format_error_message(str(e)), parse_mode="Markdown"
+            )
+        except Exception:
+            logger.exception("Failed to send heartbeat error")
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -134,6 +162,11 @@ def main():
             perform_scan,
             interval=SCAN_INTERVAL * 60,
             first=10,
+        )
+        app.job_queue.run_repeating(
+            perform_heartbeat,
+            interval=HEARTBEAT_INTERVAL * 60,
+            first=60,
         )
 
         logger.info(

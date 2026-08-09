@@ -24,6 +24,7 @@
   "signal_ttl_minutes": 15,
   "telegram": {
     "scan_interval_minutes": 1,
+    "heartbeat_interval_minutes": 15,
     "notify_on_scan": true,
     "notify_on_error": true
   }
