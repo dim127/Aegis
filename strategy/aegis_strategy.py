@@ -81,6 +81,23 @@ class AegisSMCStrategy:
     def _normalize_pair(pair: str) -> str:
         return pair if "/" in pair else f"{pair}/USDT:USDT"
 
+    @classmethod
+    def _event_confirmed_at(cls, event: dict | None, timeframe: str):
+        """When a structure event became known, not when its candle opened.
+
+        Events carry the candle's opening timestamp, but a break is only
+        confirmed once that candle closes. Comparing the opening timestamp
+        against LTF timestamps let a gap forming *inside* the HTF candle — while
+        the break was still unconfirmed — count as having formed after it.
+
+        On a 4h anchor that window is up to four hours of look-ahead.
+        """
+        if event is None:
+            return None
+        opened = event["index"]
+        duration = cls.TIMEFRAME_DURATIONS.get(timeframe)
+        return opened + duration if duration is not None else opened
+
     @staticmethod
     def _fmt(price: float) -> str:
         """Format a price with enough decimals to stay meaningful.
@@ -188,11 +205,33 @@ class AegisSMCStrategy:
         # 3. FVG on 1m
         best_fvg = None
         reason_fvg = None
+        # Timed by the event candle's *open*, deliberately.
+        #
+        # This looks like a cross-timeframe hazard and is not one. _ohlcv_to_df
+        # drops the still-forming candle, so an HTF event always comes from a
+        # candle that has already closed — there is no look-ahead to fix.
+        #
+        # Switching to the confirmation time (see _event_confirmed_at) would
+        # exclude any LTF gap formed inside the HTF candle. In SMC that gap is
+        # usually created *by* the displacement that broke structure, so
+        # excluding it would drop the most canonical entry of all. Which
+        # convention performs better is an empirical question, not an obvious
+        # one: both are exported to the backtest as fvg_after_open and
+        # fvg_after_confirm so factor_edge can settle it.
         structure_events = [
             event for event in [structure_htf["event"], structure_ltf["event"]]
             if event is not None and event["direction"] == direction
         ]
         structure_time = max((event["index"] for event in structure_events), default=None)
+        structure_confirm_time = max(
+            (t for t in (
+                self._event_confirmed_at(event, tf)
+                for event, tf in ((structure_htf["event"], tf_htf),
+                                  (structure_ltf["event"], tf_ltf))
+                if event is not None and event["direction"] == direction
+            ) if t is not None),
+            default=None,
+        )
         if bull_dir:
             sorted_fvgs = sorted(fvg_below, key=lambda x: x["gap_high"], reverse=True)
             if sorted_fvgs:
@@ -364,6 +403,12 @@ class AegisSMCStrategy:
             "structure_htf": structure_htf["event"],
             "structure_ltf": structure_ltf["event"],
             "fvg_timestamp": best_fvg["index"],
+            # Measured, not gated on: would this setup still qualify under the
+            # stricter rule that the gap must form after the HTF candle closes?
+            "fvg_after_confirm": bool(
+                structure_confirm_time is None
+                or best_fvg["index"] >= structure_confirm_time
+            ),
             "ob_timestamp": associated_ob["index"] if associated_ob else None,
             "htf_bias_text": htf_bias_text,
             "ltf_conf_text": ltf_conf_text,
