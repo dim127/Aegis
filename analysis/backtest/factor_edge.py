@@ -84,7 +84,8 @@ def main() -> None:
 
     join_cols = ["timestamp", "pair", "direction", "tf_htf", "tf_ltf"]
     extra = [c for c in ("ls_long_pct", "oi_change_24h_pct", "funding_bp", "funding_z",
-                         "event_kind") if c in sig.columns]
+                         "event_kind", "cluster_side_sweep", "cluster_side_draw",
+                         "fvg_after_confirm", "soft_hits") if c in sig.columns]
     merged = trades.merge(sig[join_cols + extra], left_on=["signal_ts", "pair", "direction", "tf_htf", "tf_ltf"],
                           right_on=join_cols, how="left")
     resolved = merged[merged["outcome"].isin(["win", "loss"])].copy()
@@ -124,6 +125,30 @@ def main() -> None:
                      d, d["funding_supports"], "funding mendukung", "funding melawan")
         split_report("[Funding] Funding ekstrem (|z| > 1)",
                      d, d["funding_z"].abs() > 1.0, "|z| > 1", "|z| <= 1")
+
+    # The contested Factor 8 direction: same data, opposite readings.
+    for column, title, yes, no in (
+        ("cluster_side_sweep",
+         "[Faktor 8 / sweep] Cluster di sisi yang disapu dulu (logika saat ini)",
+         "cluster ada di sisi sweep", "tidak ada"),
+        ("cluster_side_draw",
+         "[Faktor 8 / draw] Cluster di arah tujuan harga (logika ICT klasik)",
+         "cluster ada di sisi draw", "tidak ada"),
+    ):
+        if column in resolved.columns and resolved[column].notna().any():
+            d = resolved[resolved[column].notna()].copy()
+            split_report(title, d, d[column].astype(bool), yes, no)
+
+    if "fvg_after_confirm" in resolved.columns and resolved["fvg_after_confirm"].notna().any():
+        d = resolved[resolved["fvg_after_confirm"].notna()].copy()
+        split_report("[Timing FVG] Gap terbentuk setelah candle HTF close",
+                     d, d["fvg_after_confirm"].astype(bool),
+                     "setelah konfirmasi", "di dalam leg displacement")
+
+    if "soft_hits" in resolved.columns and resolved["soft_hits"].notna().any():
+        d = resolved[resolved["soft_hits"].notna()].copy()
+        split_report("[Soft confluence] 2+ faktor opsional vs kurang",
+                     d, d["soft_hits"] >= 2, "soft >= 2", "soft <= 1")
 
     if "event_kind" in resolved.columns:
         d = resolved[resolved["event_kind"].notna()].copy()

@@ -306,18 +306,45 @@ class AegisSMCStrategy:
                     f"{ls['short_pct']:.1f}%S (crowded {crowd}, supports {direction})"
                 )
 
-        # 8. Liquidation cluster in the direction of travel, near the entry
+        # 8. Liquidation cluster near the entry.
+        #
+        # Which side should count is genuinely contested, and the code used to
+        # contradict its own comment, so both readings are computed and only one
+        # is scored until data settles it:
+        #
+        #   sweep    (current) long looks below — sell-side liquidity gets swept
+        #            first, then price reverses up. Matches the mandatory
+        #            liquidity-sweep gate.
+        #   draw     long looks above — clusters are magnets, price is drawn
+        #            toward the pool it will run. The classic ICT reading.
+        #
+        # cluster_side_sweep / cluster_side_draw go to the backtest so
+        # factor_edge can decide. Guessing here is how factor 7 got its
+        # direction baked in unmeasured.
         reason_cluster = None
+        cluster_sweep = cluster_draw = None
         if market_ctx is not None and market_ctx.get("clusters") and best_fvg is not None:
             clusters = market_ctx["clusters"]
-            target = clusters["nearest_below"] if bull_dir else clusters["nearest_above"]
-            if target is not None and best_fvg["gap_mid"] > 0:
-                dist_pct = abs(target["price"] - best_fvg["gap_mid"]) / best_fvg["gap_mid"] * 100.0
-                if dist_pct <= self.cluster_proximity_pct:
-                    reason_cluster = (
-                        f"Liquidation cluster ${self._fmt(target['price'])} "
-                        f"({dist_pct:.1f}% dari entry, {target['strength']})"
-                    )
+            entry_price = best_fvg["gap_mid"]
+
+            def _within(target):
+                if target is None or entry_price <= 0:
+                    return None
+                dist = abs(target["price"] - entry_price) / entry_price * 100.0
+                return (dist, target) if dist <= self.cluster_proximity_pct else None
+
+            below, above = _within(clusters["nearest_below"]), _within(clusters["nearest_above"])
+            sweep_hit = below if bull_dir else above
+            draw_hit = above if bull_dir else below
+            cluster_sweep = sweep_hit is not None
+            cluster_draw = draw_hit is not None
+
+            if sweep_hit is not None:
+                dist_pct, target = sweep_hit
+                reason_cluster = (
+                    f"Liquidation cluster ${self._fmt(target['price'])} "
+                    f"({dist_pct:.1f}% dari entry, {target['strength']})"
+                )
 
         # Mandatory: structure shift (15m CHOCH/BOS OR 1m CHOCH).
         has_structure = struct_htf or confirm_ltf
@@ -429,6 +456,8 @@ class AegisSMCStrategy:
             "fvg_timestamp": best_fvg["index"],
             # Measured, not gated on: would this setup still qualify under the
             # stricter rule that the gap must form after the HTF candle closes?
+            "cluster_side_sweep": cluster_sweep,
+            "cluster_side_draw": cluster_draw,
             "fvg_after_confirm": bool(
                 structure_confirm_time is None
                 or best_fvg["index"] >= structure_confirm_time
