@@ -334,6 +334,18 @@ def volume_context(df: pd.DataFrame, window: int = 24) -> Optional[dict]:
     return {"latest": latest, "average": average, "ratio": latest / average}
 
 
+def _round_relative(price: float, significant: int = 6) -> float:
+    """Round to a fixed number of significant digits rather than decimals.
+
+    Keeps the same relative precision whether the asset trades at $0.52 or
+    $64,000, which a fixed decimal count cannot do.
+    """
+    if not price or not np.isfinite(price):
+        return float(price)
+    magnitude = int(np.floor(np.log10(abs(price))))
+    return float(round(price, max(0, significant - 1 - magnitude)))
+
+
 def _strength_label(density: float, density_max: float) -> str:
     if density_max <= 0:
         return "weak"
@@ -426,7 +438,12 @@ def estimate_liquidation_clusters(df: pd.DataFrame, leverage: float = 10.0) -> O
     nearest_below = None
     for idx in peaks:
         bin_low, bin_high = float(bins[idx]), float(bins[idx + 1])
-        peak_price = round((bin_low + bin_high) / 2, 2)
+        # Precision must scale with the price, not be fixed at two decimals.
+        # At 2dp an XRP-priced asset moves in ~1% steps, and this price is
+        # compared against a 3% proximity threshold — so a third of the gate
+        # was rounding noise. Entry/SL/TP already snap to the exchange tick;
+        # this closes the same hole on the one price that did not.
+        peak_price = _round_relative((bin_low + bin_high) / 2)
         peak_density = float(density[idx])
         if bin_high > current and (nearest_above is None or peak_price < nearest_above["price"]):
             nearest_above = {
