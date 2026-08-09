@@ -143,5 +143,32 @@ class CheckAllTests(unittest.TestCase):
         self.assertEqual(fetch.call_count, 1, "same pair must not be fetched twice")
 
 
+class StatusWordingTests(unittest.TestCase):
+    """R must not be quoted for a signal that has no position behind it."""
+
+    def setUp(self):
+        from check_status import _progress
+        self._progress = _progress
+
+    def test_pending_reports_distance_not_r(self):
+        s = pending(status="PENDING")
+        text = self._progress(s, 104.0)
+        self.assertIn("menunggu entry", text)
+        self.assertNotIn("R)", text)
+
+    def test_triggered_reports_r(self):
+        s = pending(status="TRIGGERED")
+        self.assertIn("+1.00R", self._progress(s, 105.0))
+
+    def test_stop_and_target_still_reported_for_pending(self):
+        s = pending(status="PENDING")
+        self.assertIn("STOP LOSS", self._progress(s, 94.0))
+        self.assertIn("TAKE PROFIT", self._progress(s, 116.0))
+
+    def test_short_pending_distance_sign(self):
+        s = pending("short", status="PENDING", entry=100.0, sl=105.0, tp=85.0)
+        self.assertIn("-2.00%", self._progress(s, 98.0))
+
+
 if __name__ == "__main__":
     unittest.main()

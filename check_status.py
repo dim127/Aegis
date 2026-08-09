@@ -14,22 +14,29 @@ from notifications.telegram_bot import fmt_price
 
 
 def _progress(trade: dict, price: float) -> str:
-    """Where price sits between the signal's stop and its target, in R."""
+    """Where price sits relative to the signal.
+
+    R is only reported once the entry has actually been reached. A PENDING
+    signal has no position behind it, so quoting "+0.45R" there would describe
+    profit that does not exist — the setup may still invalidate before it ever
+    fills, which is exactly what happened to the first signal this tracked.
+    """
+    long = trade["direction"] == "long"
+    if long and price <= trade["sl"] or not long and price >= trade["sl"]:
+        return "STOP LOSS TERSENTUH"
+    if long and price >= trade["tp"] or not long and price <= trade["tp"]:
+        return "TAKE PROFIT TERSENTUH"
+
+    if trade.get("status") != "TRIGGERED":
+        distance = (price - trade["entry"]) / trade["entry"] * 100.0
+        return f"menunggu entry ({distance:+.2f}% dari entry)"
+
     reference = trade.get("fill_price") or trade["entry"]
     risk = abs(reference - trade["sl"])
     if risk <= 0:
         return "risk tidak valid"
-    if trade["direction"] == "long":
-        if price <= trade["sl"]:
-            return "STOP LOSS TERSENTUH"
-        if price >= trade["tp"]:
-            return "TAKE PROFIT TERSENTUH"
-        return f"berjalan ({(price - reference) / risk:+.2f}R)"
-    if price >= trade["sl"]:
-        return "STOP LOSS TERSENTUH"
-    if price <= trade["tp"]:
-        return "TAKE PROFIT TERSENTUH"
-    return f"berjalan ({(reference - price) / risk:+.2f}R)"
+    moved = (price - reference) if long else (reference - price)
+    return f"berjalan ({moved / risk:+.2f}R)"
 
 
 def main():
