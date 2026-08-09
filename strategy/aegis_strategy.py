@@ -20,6 +20,12 @@ class AegisSMCStrategy:
     DEFAULT_RR_TARGET = 3.0
     DEFAULT_ATR_PROXIMITY = 2.0
     DEFAULT_MIN_CONFLUENCE = 3
+    # Structure, FVG and sweep are mandatory, and each contributes exactly one
+    # reason — so total confluence is >= 3 before any threshold is consulted,
+    # which is why min_confluence could never reject anything. Only the soft
+    # factors carry information a threshold can act on.
+    HARD_FACTORS = ("structure", "fvg", "sweep")
+    SOFT_FACTORS = ("ob", "breakout", "long_short", "cluster")
     DEFAULT_COSTS = {
         "maker_fee_pct": 0.02,
         "taker_fee_pct": 0.04,
@@ -42,6 +48,11 @@ class AegisSMCStrategy:
         self.rr_target = float(smc_config.get("rr_target", self.DEFAULT_RR_TARGET))
         self.atr_proximity = float(smc_config.get("atr_proximity", self.DEFAULT_ATR_PROXIMITY))
         self.min_confluence = int(smc_config.get("min_confluence", self.DEFAULT_MIN_CONFLUENCE))
+        # Defaults to 0: confluence scored p=1.000 against outcomes over 79
+        # trades, so a tighter gate would cut signal volume with no evidence of
+        # better quality. Making the knob work is correctness; turning it up
+        # without data would be guessing.
+        self.min_soft_confluence = int(smc_config.get("min_soft_confluence", 0))
 
         market_cfg = smc_config.get("market", {})
         self.long_short_enabled = bool(market_cfg.get("long_short_enabled", True))
@@ -80,6 +91,11 @@ class AegisSMCStrategy:
     @staticmethod
     def _normalize_pair(pair: str) -> str:
         return pair if "/" in pair else f"{pair}/USDT:USDT"
+
+    @classmethod
+    def _count_soft(cls, factor_names) -> int:
+        """How many optional factors fired, ignoring the mandatory three."""
+        return sum(1 for name in factor_names if name in cls.SOFT_FACTORS)
 
     @classmethod
     def _event_confirmed_at(cls, event: dict | None, timeframe: str):
@@ -319,13 +335,20 @@ class AegisSMCStrategy:
             return {"valid": False, "reason": "No liquidity sweep before structure shift",
                     "reasons": [r for r in [reason_htf, reason_ltf, reason_fvg] if r], "confluence": 0}
 
-        reasons = [r for r in [reason_htf, reason_ltf, reason_fvg, reason_ob, reason_breakout, reason_sweep, reason_long_short, reason_cluster] if r]
+        tagged = [
+            ("structure", reason_htf), ("structure", reason_ltf), ("fvg", reason_fvg),
+            ("ob", reason_ob), ("breakout", reason_breakout), ("sweep", reason_sweep),
+            ("long_short", reason_long_short), ("cluster", reason_cluster),
+        ]
+        reasons = [text for _, text in tagged if text]
         confluence = len(reasons)
+        soft_hits = self._count_soft(name for name, text in tagged if text)
 
-        if confluence < self.min_confluence:
+        if soft_hits < self.min_soft_confluence:
             return {"valid": False,
-                    "reason": f"Confluence too low: {confluence}/8 (need {self.min_confluence})",
-                    "reasons": reasons, "confluence": confluence}
+                    "reason": (f"Soft confluence too low: {soft_hits}/{len(self.SOFT_FACTORS)} "
+                               f"(need {self.min_soft_confluence})"),
+                    "reasons": reasons, "confluence": confluence, "soft_hits": soft_hits}
 
         sl = liquidity_inflection(df_ltf, direction, before=best_fvg["index"])
         if sl is None:
@@ -398,6 +421,7 @@ class AegisSMCStrategy:
             "risk": risk,
             "risk_pct": round(risk_pct, 3),
             "confluence": confluence,
+            "soft_hits": soft_hits,
             "reasons": reasons,
             "timestamp": df_ltf.index[-1],
             "structure_htf": structure_htf["event"],
