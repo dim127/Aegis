@@ -64,13 +64,17 @@ Yang dilarang: hitungan faktor (`min_confluence`), bobot, ambang biaya, tolerans
 kedekatan, skor gabungan. Yang boleh: syarat struktural biner — MSS ada atau
 tidak, FVG segar atau sudah termitigasi, sweep terjadi atau tidak.
 
-**Confluence di sini berarti struktural, bukan tally.** HTF *dan* LTF harus
-sama-sama menunjukkan MSS searah. Itu dua pembacaan independen yang sepakat,
-bukan dua poin yang dijumlahkan.
+**Dua timeframe punya peran berbeda.** HTF menyediakan POI (FVG belum
+termitigasi); LTF memberi konfirmasi (MSS yang membreak sweep). Jangan menuntut
+MSS di HTF — itu meminta HTF mengerjakan tugas LTF, dan pernah membuat seluruh
+kandidat tertolak.
 
-**Level datang dari struktur, bukan angka pilihan.** Entry di FVG midpoint, stop
-di swing terakhir, target di swing berlawanan. **R adalah keluaran** — hasil dari
-jarak antar swing, bukan angka yang ditetapkan lebih dulu.
+Urutannya: POI → retracement → sweep di dalam POI → MSS → entry di FVG dalam
+zona OTE 61.8–78.6%.
+
+**Level datang dari struktur, bukan angka pilihan.** Stop di belakang sweep,
+target di swing berlawanan. **R adalah keluaran** — hasil jarak antar level,
+bukan angka yang ditetapkan lebih dulu.
 
 **Jangan matikan verifikasi SSL.** Error sertifikat pernah muncul di sini karena
 DNS dibajak Internet Positif. `verify=False` bukan perbaikan — itu mengubah

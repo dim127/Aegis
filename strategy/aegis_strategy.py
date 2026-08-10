@@ -1,29 +1,34 @@
-"""Aegis — pure SMC setup detection on Hyperliquid perpetuals.
+"""Aegis — ICT reversal detection on Hyperliquid perpetuals.
 
-Five conditions, all required, none scored:
+The two timeframes have different jobs. The HTF supplies the *zone*; the LTF
+supplies the *confirmation*. Demanding a structure shift on both was the earlier
+mistake — it asked the higher timeframe to do the lower one's work, and rejected
+every candidate.
 
-    1. MSS on the HTF      market structure shift (BOS/CHoCH) in the direction
-    2. MSS on the LTF       the same shift, confirmed on the entry timeframe
-    3. Fresh FVG            an unmitigated gap formed after that shift
-    4. Liquidity sweep      a prior swing taken out and reversed, before the shift
-    5. Swing anchor         a confirmed swing behind the FVG, to place the stop
+Sequence, in order, all required:
 
-Confluence here means the *structural* kind: two independent timeframe reads
-agreeing, both required. It is not a tally. There is no 3/8 or 5/8 to reach, no
-minimum count, no proximity tolerance, no cost filter. Two scans of the same
-market state return the same answer, and a setup either satisfies the structure
-or it does not — which is the point. A score can sit at 4/8 and mean nothing in
-particular; that ambiguity is what made setups equivocal.
+    1. POI          an unmitigated FVG on the HTF — the zone price must reach
+    2. Retracement  price actually trades back into that zone
+    3. Sweep        liquidity taken *inside* the POI, then reclaimed
+    4. MSS          a structure shift on the LTF, breaking the sweep — the
+                    confirmation that the reversal is underway
+    5. Entry        a fresh LTF FVG sitting in the OTE band (61.8-78.6%) of the
+                    leg that produced the MSS
 
-Levels come from structure rather than from chosen numbers:
+Nothing is scored, counted or weighted. There is no 3/8 to reach and no minimum
+tally — a score can sit at 4/8 and mean nothing in particular, which is the
+ambiguity that made setups equivocal. Each condition is binary, checked in
+order, and a rejection always names the step that failed.
 
-    entry   FVG midpoint
-    stop    last swing behind the FVG, plus an ATR buffer
-    target  nearest opposing swing — the liquidity the move runs at
+Levels come from the structure that produced the setup:
 
-So R is an *output*. It is whatever the distance between those swings makes it,
-not a number picked in advance and imposed on the chart. The fixed multiple
-survives only as a fallback for when no opposing swing is in range.
+    entry   the OTE-zone FVG midpoint
+    stop    behind the sweep itself — the level whose violation disproves the
+            reversal thesis
+    target  the nearest opposing swing, where the liquidity actually sits
+
+So R is an *output*, not an input: whatever the distance between those levels
+makes it, rather than a number chosen in advance and imposed on the chart.
 """
 import json
 from pathlib import Path
@@ -33,7 +38,7 @@ import pandas as pd
 
 from indicators import (
     atr, detect_structure, fair_value_gaps, is_fvg_mitigated, latest_structure_event,
-    liquidity_inflection, liquidity_target, detect_liquidity_sweep,
+    liquidity_inflection, liquidity_target, find_liquidity_sweep, ote_zone,
 )
 
 
@@ -147,59 +152,89 @@ class AegisSMCStrategy:
         structure_ltf = detect_structure(df_ltf, window=15)
         atr_ltf_val = atr(df_ltf, period=14).iloc[-1] if len(df_ltf) > 14 else 0
         fvg_info = fair_value_gaps(df_ltf, lookback=60)
+        fvg_htf = fair_value_gaps(df_htf, lookback=60)
 
-        # ---- 1. MSS confluence: HTF *and* LTF, same direction ---------------
-        # Both timeframes must shift, not either. This is confluence in the
-        # structural sense — two independent reads agreeing — not a score to be
-        # tallied. Requiring only one let a 1m break trade against 4h structure,
-        # which is exactly the equivocal setup this is meant to exclude.
+        # ---- 1. HTF point of interest: an unmitigated FVG -------------------
+        # The higher timeframe supplies the zone, not a confirmation. Requiring
+        # an MSS here asks it to do the lower timeframe's job.
+        htf_fvgs = (fvg_htf["bullish_fvgs"] if bull_dir else fvg_htf["bearish_fvgs"])
+        poi = None
+        for fvg in sorted(htf_fvgs, key=lambda f: f["index"], reverse=True):
+            if not is_fvg_mitigated(df_htf, fvg["gap_low"], fvg["gap_high"], fvg["index"]):
+                poi = fvg
+                break
+        if poi is None:
+            return {"valid": False, "reason": f"No unmitigated {tf_htf} FVG (POI)"}
+
+        # ---- 2. Price retraced into the POI --------------------------------
+        low_now = float(df_ltf["Low"].iloc[-1])
+        high_now = float(df_ltf["High"].iloc[-1])
+        touched = (df_ltf["Low"].tail(60) <= poi["gap_high"]).any() and \
+                  (df_ltf["High"].tail(60) >= poi["gap_low"]).any()
+        if not touched:
+            return {"valid": False, "reason": f"Price has not retraced into the {tf_htf} FVG"}
+
+        # ---- 3. Liquidity sweep inside the POI ------------------------------
+        sweep = find_liquidity_sweep(df_ltf, direction, window=30)
+        if sweep is None:
+            return {"valid": False, "reason": "No liquidity sweep"}
+        if not (poi["gap_low"] <= sweep["price"] <= poi["gap_high"]):
+            return {"valid": False,
+                    "reason": f"Sweep at {self._fmt(sweep['price'])} sits outside the {tf_htf} FVG"}
+
+        # ---- 4. MSS on the LTF, breaking the sweep --------------------------
+        # The confirmation, and it must come after the sweep it confirms.
         if bull_dir:
-            htf_shift = structure_htf["bullish_choch"] or structure_htf["bullish_bos"]
             ltf_shift = structure_ltf["bullish_choch"] or structure_ltf["bullish_bos"]
-            candidate_fvgs = fvg_info["bullish_fvgs"]
         else:
-            htf_shift = structure_htf["bearish_choch"] or structure_htf["bearish_bos"]
             ltf_shift = structure_ltf["bearish_choch"] or structure_ltf["bearish_bos"]
-            candidate_fvgs = fvg_info["bearish_fvgs"]
-
-        if not htf_shift:
-            return {"valid": False, "reason": f"No MSS on {tf_htf}"}
         if not ltf_shift:
-            return {"valid": False, "reason": f"No MSS on {tf_ltf} (HTF only)"}
+            return {"valid": False, "reason": f"No MSS on {tf_ltf} after the sweep"}
 
-        events = [e for e in (structure_htf["event"], structure_ltf["event"])
-                  if e is not None and e["direction"] == direction]
-        structure_time = max((e["index"] for e in events), default=None)
-        event_kind = events[-1]["kind"] if events else "BREAK"
+        mss_event = structure_ltf["event"]
+        if mss_event is None or mss_event["direction"] != direction:
+            return {"valid": False, "reason": f"No {tf_ltf} MSS in this direction"}
+        structure_time = mss_event["index"]
+        event_kind = mss_event["kind"]
+        if structure_time <= sweep["index"]:
+            return {"valid": False, "reason": "MSS did not follow the sweep"}
 
-        # ---- 2. Fresh FVG formed after the shift ----------------------------
-        # Nearest to price first: that is the gap price reaches on the pullback.
-        ordered = sorted(candidate_fvgs, key=lambda f: f["gap_high"], reverse=bull_dir)
+        # The MSS must break a swing belonging to the leg the sweep produced,
+        # not merely happen afterwards. Without this, a break of some unrelated
+        # older swing counts as confirmation of a reversal it says nothing
+        # about — the sweep and the shift would only share a direction and an
+        # ordering, which is coincidence rather than structure.
+        broken = mss_event.get("broken_swing_index")
+        if broken is None or broken < sweep["index"]:
+            return {"valid": False,
+                    "reason": "MSS broke a swing older than the sweep"}
+
+        # ---- 5. Entry: LTF FVG inside the OTE of the MSS leg ----------------
+        leg = df_ltf.loc[sweep["index"]:structure_time]
+        leg_low, leg_high = float(leg["Low"].min()), float(leg["High"].max())
+        ote_low, ote_high = ote_zone(leg_low, leg_high, direction)
+
+        candidate_fvgs = (fvg_info["bullish_fvgs"] if bull_dir else fvg_info["bearish_fvgs"])
         best_fvg = None
-        for fvg in ordered:
-            if structure_time is not None and fvg["index"] < structure_time:
+        for fvg in sorted(candidate_fvgs, key=lambda f: f["index"], reverse=True):
+            if fvg["index"] < sweep["index"]:
                 continue
             if is_fvg_mitigated(df_ltf, fvg["gap_low"], fvg["gap_high"], fvg["index"]):
                 continue
-            best_fvg = fvg
-            break
-
+            if ote_low <= fvg["gap_mid"] <= ote_high:
+                best_fvg = fvg
+                break
         if best_fvg is None:
-            return {"valid": False, "reason": "No fresh FVG after the structure shift"}
+            return {"valid": False,
+                    "reason": (f"No fresh {tf_ltf} FVG inside OTE "
+                               f"{self._fmt(ote_low)}-{self._fmt(ote_high)}")}
 
-        # ---- 3. Liquidity sweep before the shift ----------------------------
-        if structure_time is None or not detect_liquidity_sweep(
-            df_ltf, direction, before=structure_time, window=30
-        ):
-            return {"valid": False, "reason": "No liquidity sweep before the shift"}
-
-        # ---- 4. Swing anchor for the stop -----------------------------------
-        swing = liquidity_inflection(df_ltf, direction, before=best_fvg["index"])
-        if swing is None:
-            return {"valid": False, "reason": "No confirmed swing behind the FVG"}
-
+        # ---- 6. Levels -------------------------------------------------------
         entry = quantize(best_fvg["gap_mid"])
+        # Stop goes behind the sweep itself — the level whose violation would
+        # mean the reversal thesis was wrong.
         buffer = atr_ltf_val * self.sl_atr_buffer
+        swing = sweep["price"]
         sl = quantize(swing - buffer if bull_dir else swing + buffer)
 
         risk = (entry - sl) if bull_dir else (sl - entry)
@@ -226,17 +261,18 @@ class AegisSMCStrategy:
             return {"valid": False, "reason": "Target sits on the wrong side of entry"}
         rr = reward / risk
 
-        htf_kind = structure_htf["event"]["kind"] if structure_htf["event"] else "MSS"
         ltf_kind = structure_ltf["event"]["kind"] if structure_ltf["event"] else "MSS"
         side = "Bullish" if bull_dir else "Bearish"
         return {
             "valid": True,
             "direction": direction,
             "action": "BUY LIMIT" if bull_dir else "SELL LIMIT",
-            "htf_label": f"{tf_htf.upper()} {htf_kind} {side}",
-            "ltf_label": f"{tf_ltf.upper()} {ltf_kind} {side}",
-            "swing_label": (f"swing {'low' if bull_dir else 'high'} "
-                            f"{self._fmt(swing)} (anchor SL)"),
+            "poi_label": (f"{tf_htf.upper()} FVG {self._fmt(poi['gap_low'])}"
+                          f"-{self._fmt(poi['gap_high'])} (POI)"),
+            "sweep_label": (f"sweep {self._fmt(sweep['price'])} di dalam POI "
+                            f"(ambil {self._fmt(sweep['swept_level'])})"),
+            "mss_label": f"{tf_ltf.upper()} MSS {ltf_kind} {side}",
+            "ote_label": f"OTE {self._fmt(ote_low)}-{self._fmt(ote_high)}",
             "entry": entry,
             "sl": sl,
             "tp": tp,
@@ -247,10 +283,11 @@ class AegisSMCStrategy:
             "tp_label": (f"swing {'high' if bull_dir else 'low'} {self._fmt(tp)}"
                          if tp_source == "swing" else f"{self.rr_target:.0f}R multiple"),
             "event_kind": event_kind,
-            "swing_level": swing,
+            "sweep_price": sweep["price"],
+            "ote_low": ote_low,
+            "ote_high": ote_high,
             "fvg_label": (f"{tf_ltf.upper()} FVG {self._fmt(best_fvg['gap_low'])}"
-                          f"-{self._fmt(best_fvg['gap_high'])} (fresh)"),
-            "sweep_label": f"{tf_ltf.upper()} liquidity sweep",
+                          f"-{self._fmt(best_fvg['gap_high'])} (entry, dalam OTE)"),
             "timestamp": df_ltf.index[-1],
             "structure_htf": structure_htf["event"],
             "structure_ltf": structure_ltf["event"],

@@ -11,33 +11,31 @@ Aegis memindai perpetual **Hyperliquid** dengan Smart Money Concepts murni dan
 melaporkan setup yang ditemukannya. Tidak ada indikator teknikal, tidak ada
 sistem skor, tidak ada ambang — hanya **price action dan struktur pasar**.
 
-## Lima syarat, semuanya wajib
+## Urutan ICT — lima tahap, semuanya wajib
 
-| # | Syarat | Timeframe |
-|---|--------|-----------|
-| 1 | **MSS HTF** — BOS/CHoCH searah | 15m / 1h / 4h |
-| 2 | **MSS LTF** — pergeseran yang sama, terkonfirmasi | 1m / 5m / 15m |
-| 3 | **FVG segar** — gap belum termitigasi, terbentuk setelah MSS | LTF |
-| 4 | **Liquidity sweep** — swing sebelumnya disapu lalu berbalik | LTF |
-| 5 | **Swing anchor** — swing terkonfirmasi di belakang FVG | LTF |
+Dua timeframe punya **peran berbeda**. HTF menyediakan zona, LTF memberi
+konfirmasi. Menuntut MSS di keduanya adalah kesalahan sebelumnya — itu meminta
+HTF mengerjakan tugas LTF, dan hasilnya menolak semua kandidat.
 
-Setup muncul kalau kelimanya terpenuhi, dan tidak muncul kalau tidak. Setiap
-penolakan menyebut **gerbang mana yang gagal**, jadi setup yang tidak muncul
-selalu bisa dijelaskan.
+| # | Tahap | Timeframe |
+|---|-------|-----------|
+| 1 | **POI** — FVG belum termitigasi | HTF |
+| 2 | **Retracement** — harga benar-benar kembali ke zona itu | LTF |
+| 3 | **Sweep** — likuiditas disapu **di dalam POI**, lalu direbut kembali | LTF |
+| 4 | **MSS** — pergeseran struktur yang membreak sweep tadi | LTF |
+| 5 | **Entry** — FVG segar di pita **OTE 61.8–78.6%** dari leg MSS | LTF |
 
-### Confluence di sini berarti struktural
+Setiap tahap biner, diperiksa berurutan, dan penolakan selalu menyebut tahap
+mana yang gagal — jadi setup yang tidak muncul selalu bisa dijelaskan.
 
-Syarat 1 dan 2 adalah confluence dalam arti sebenarnya: **dua pembacaan
-timeframe yang independen harus sepakat**. Bukan dua poin yang dijumlahkan.
-
-Dulu syaratnya `HTF atau LTF`, dan itu membiarkan break 1m melawan struktur 4h —
-persis setup mendua yang sekarang dikecualikan.
+**Confluence di sini bukan tally.** Ia berarti dua timeframe menjalankan peran
+masing-masing dengan benar, bukan dua poin yang dijumlahkan.
 
 ## Level datang dari struktur
 
 ```
-entry   FVG midpoint
-stop    swing terakhir di belakang FVG + 1.5× ATR
+entry   FVG di zona OTE
+stop    di belakang sweep — level yang kalau tembus, tesis reversal batal
 target  swing berlawanan terdekat (likuiditas yang dituju harga)
 ```
 

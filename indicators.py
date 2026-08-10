@@ -521,6 +521,68 @@ def is_breakout_candle(
     return is_impulsive and has_volume and directional_close
 
 
+def find_liquidity_sweep(df: pd.DataFrame, direction: str, before=None,
+                         window: int = 15) -> dict | None:
+    """Locate the sweep, not merely detect one.
+
+    Returns the extreme price reached, when it happened, and the swing level it
+    took out. The boolean version cannot support the ICT model: the stop belongs
+    at the sweep candle itself, and the sweep has to be confirmed as occurring
+    *inside* the HTF point of interest — both need the location, not a yes/no.
+    """
+    reference = df.loc[df.index < before] if before is not None else df
+    if len(reference) < window + 5:
+        return None
+    recent = reference.iloc[-window:]
+
+    if direction == "long":
+        extreme = float(recent["Low"].min())
+        extreme_idx = recent["Low"].idxmin()
+        swings = swing_lows(reference, 3)
+        prior = swings[swings].index[swings[swings].index < extreme_idx]
+        if not len(prior):
+            return None
+        swept_level = float(reference.loc[prior[-1], "Low"])
+        if extreme >= swept_level:
+            return None
+        # A sweep is only a sweep once price closes back above what it took.
+        after = reference.loc[extreme_idx:]
+        if not (after["Close"] > swept_level).any():
+            return None
+    else:
+        extreme = float(recent["High"].max())
+        extreme_idx = recent["High"].idxmax()
+        swings = swing_highs(reference, 3)
+        prior = swings[swings].index[swings[swings].index < extreme_idx]
+        if not len(prior):
+            return None
+        swept_level = float(reference.loc[prior[-1], "High"])
+        if extreme <= swept_level:
+            return None
+        after = reference.loc[extreme_idx:]
+        if not (after["Close"] < swept_level).any():
+            return None
+
+    return {"price": extreme, "index": extreme_idx, "swept_level": swept_level}
+
+
+def ote_zone(leg_low: float, leg_high: float, direction: str,
+             lower: float = 0.618, upper: float = 0.786) -> tuple[float, float]:
+    """Optimal Trade Entry band of a leg, as (low, high).
+
+    ICT's discount/premium window: price retracing 61.8-78.6% of the impulse
+    that shifted structure. This is a location on the chart, in the same sense
+    an FVG is a location — not a score, and nothing is ranked by how deep into
+    it an entry sits.
+    """
+    span = leg_high - leg_low
+    if span <= 0:
+        return (leg_low, leg_high)
+    if direction == "long":
+        return (leg_high - span * upper, leg_high - span * lower)
+    return (leg_low + span * lower, leg_low + span * upper)
+
+
 def detect_liquidity_sweep(df: pd.DataFrame, direction: str, before=None, window: int = 15) -> bool:
     """
     Check if a liquidity sweep occurred before the given index.

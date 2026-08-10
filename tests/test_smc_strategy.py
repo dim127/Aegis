@@ -5,6 +5,7 @@ import pandas as pd
 
 from analysis.replay_smc import replay_closed_candles
 from indicators import _ob_mitigation_ratio, detect_structure, is_fvg_mitigated, latest_structure_event, liquidity_inflection
+from indicators import ote_zone
 from strategy.aegis_strategy import AegisSMCStrategy
 
 
@@ -161,131 +162,188 @@ class ClosedCandleReplayTests(unittest.TestCase):
         self.assertEqual(received_lengths, [(51, 50, "long"), (51, 50, "short")])
 
 
-if __name__ == "__main__":
-    unittest.main()
+class ICTSequenceTests(unittest.TestCase):
+    """POI -> retracement -> sweep -> MSS -> OTE entry, in that order.
 
-
-class PureDetectionTests(unittest.TestCase):
-    """All five conditions required, nothing scored.
-
-    The gates are checked in order, and each rejection names the one that failed
-    — so a setup that does not appear can always be explained, rather than being
-    the silent result of a score landing under some threshold.
+    The two timeframes do different jobs: HTF gives the zone, LTF gives the
+    confirmation. Each gate is binary and rejections name the step that failed,
+    so a setup that does not appear is always explicable.
     """
 
     def setUp(self):
         self.strategy = AegisSMCStrategy(exchange=object(), config=APPROVED_CONFIG)
-        self.df_htf = make_frame()
-        self.df_ltf = make_frame()
-        self.fvg = {
-            "index": self.df_ltf.index[-1],
-            "displacement_index": self.df_ltf.index[-2],
-            "direction": "long",
-            "gap_low": 100.0, "gap_high": 105.0, "gap_mid": 102.5,
-        }
+        # LTF that sweeps down to 90 then recovers, so a long is plausible.
+        idx = pd.date_range("2026-01-01", periods=80, freq="min", tz="UTC")
+        close = [100.0] * 60 + [95.0] * 5 + [104.0] * 15
+        self.df_ltf = pd.DataFrame(
+            {"Open": close, "High": [c + 1 for c in close],
+             "Low": [c - 1 for c in close], "Close": close,
+             "Volume": [100.0] * 80}, index=idx)
+        self.df_htf = self.df_ltf.copy()
+        self.poi = {"index": self.df_htf.index[-30], "displacement_index": self.df_htf.index[-31],
+                    "direction": "long", "gap_low": 88.0, "gap_high": 96.0, "gap_mid": 92.0}
+        self.sweep = {"price": 92.0, "index": self.df_ltf.index[-18],
+                      "swept_level": 94.0}
+        self.entry_fvg = {"index": self.df_ltf.index[-6],
+                          "displacement_index": self.df_ltf.index[-7],
+                          "direction": "long", "gap_low": 96.0,
+                          "gap_high": 98.0, "gap_mid": 97.0}
 
-    def _run(self, htf_shift=True, ltf_shift=True, fvg=True, sweep=True, swing=95.0):
+    def _run(self, poi=True, retraced=True, sweep=True, sweep_inside=True,
+             mss=True, mss_after=True, entry_fvg=True):
+        sweep_pos = self.df_ltf.index.get_loc(self.sweep["index"])
         event = {"direction": "long", "kind": "CHOCH",
-                 "index": self.df_htf.index[-1], "level": 109.0}
-        htf = structure_result(event=event if htf_shift else None,
-                               bullish_choch=htf_shift)
-        ltf = structure_result(event=event if ltf_shift else None,
-                               bullish_choch=ltf_shift)
+                 "index": self.df_ltf.index[-10 if mss_after else -25], "level": 104.0,
+                 "broken_swing_index": self.df_ltf.index[sweep_pos + 2]}
+        ltf_struct = structure_result(event=event if mss else None, bullish_choch=mss)
+        htf_struct = structure_result()
+        sweep_obj = dict(self.sweep)
+        if not sweep_inside:
+            sweep_obj["price"] = 70.0
+        # "Not retraced" means the zone sits far from where price has traded,
+        # so move the POI rather than the frame.
+        poi_obj = dict(self.poi)
+        if not retraced:
+            poi_obj.update(gap_low=500.0, gap_high=510.0, gap_mid=505.0)
+        htf_frame = self.df_htf
         with (
-            patch("strategy.aegis_strategy.latest_structure_event", return_value=htf),
-            patch("strategy.aegis_strategy.detect_structure", return_value=ltf),
-            patch("strategy.aegis_strategy.fair_value_gaps",
-                  return_value={"bullish_fvgs": [self.fvg] if fvg else [],
-                                "bearish_fvgs": []}),
+            patch("strategy.aegis_strategy.latest_structure_event", return_value=htf_struct),
+            patch("strategy.aegis_strategy.detect_structure", return_value=ltf_struct),
             patch("strategy.aegis_strategy.atr", return_value=pd.Series([1.0])),
             patch("strategy.aegis_strategy.is_fvg_mitigated", return_value=False),
-            patch("strategy.aegis_strategy.detect_liquidity_sweep", return_value=sweep),
-            patch("strategy.aegis_strategy.liquidity_inflection", return_value=swing),
+            patch("strategy.aegis_strategy.find_liquidity_sweep",
+                  return_value=sweep_obj if sweep else None),
             patch("strategy.aegis_strategy.liquidity_target", return_value=None),
+            patch("strategy.aegis_strategy.fair_value_gaps") as fvgs,
         ):
-            return self.strategy._check_direction(self.df_htf, self.df_ltf, "long")
+            fvgs.side_effect = lambda df, **kw: (
+                {"bullish_fvgs": [poi_obj] if poi else [], "bearish_fvgs": []}
+                if df is htf_frame else
+                {"bullish_fvgs": [self.entry_fvg] if entry_fvg else [], "bearish_fvgs": []}
+            )
+            return self.strategy._check_direction(htf_frame, self.df_ltf, "long")
 
-    def test_all_five_conditions_produce_a_setup(self):
-        r = self._run()
-        self.assertTrue(r["valid"], r.get("reason"))
-        self.assertEqual(r["entry"], 102.5)
-
-    def test_htf_alone_is_not_enough(self):
-        # The confluence requirement: an LTF break without HTF agreement, or
-        # vice versa, is not a setup.
-        r = self._run(ltf_shift=False)
+    def test_missing_poi_rejects_first(self):
+        r = self._run(poi=False)
         self.assertFalse(r["valid"])
-        self.assertIn("No MSS on 1m", r["reason"])
+        self.assertIn("POI", r["reason"])
 
-    def test_ltf_alone_is_not_enough(self):
-        r = self._run(htf_shift=False)
+    def test_price_must_retrace_into_the_poi(self):
+        r = self._run(retraced=False)
         self.assertFalse(r["valid"])
-        self.assertIn("No MSS on 15m", r["reason"])
+        self.assertIn("retraced", r["reason"])
 
-    def test_missing_fvg_rejects(self):
-        self.assertIn("FVG", self._run(fvg=False)["reason"])
-
-    def test_missing_sweep_rejects(self):
+    def test_no_sweep_rejects(self):
         self.assertIn("sweep", self._run(sweep=False)["reason"])
 
-    def test_missing_swing_rejects(self):
-        self.assertIn("swing", self._run(swing=None)["reason"])
+    def test_sweep_outside_the_poi_rejects(self):
+        # The sweep has to happen inside the zone; one elsewhere is a different
+        # event that says nothing about this POI.
+        r = self._run(sweep_inside=False)
+        self.assertFalse(r["valid"])
+        self.assertIn("outside", r["reason"])
 
-    def test_no_score_or_threshold_fields_remain(self):
+    def test_missing_mss_rejects(self):
+        self.assertIn("MSS", self._run(mss=False)["reason"])
+
+    def test_mss_before_the_sweep_rejects(self):
+        # Confirmation cannot precede what it confirms.
+        r = self._run(mss_after=False)
+        self.assertFalse(r["valid"])
+        self.assertIn("did not follow", r["reason"])
+
+    def test_htf_needs_no_mss_of_its_own(self):
+        # The regression that motivated this design: HTF supplies the zone, and
+        # requiring a shift there rejected everything.
+        r = self._run()
+        self.assertTrue(r["valid"], r.get("reason"))
+
+    def test_entry_sits_in_the_ote_band(self):
+        r = self._run()
+        self.assertTrue(r["valid"], r.get("reason"))
+        self.assertGreaterEqual(r["entry"], r["ote_low"])
+        self.assertLessEqual(r["entry"], r["ote_high"])
+
+    def test_stop_sits_behind_the_sweep(self):
+        r = self._run()
+        self.assertLess(r["sl"], r["sweep_price"])
+
+    def test_no_score_fields_remain(self):
         r = self._run()
         for gone in ("confluence", "soft_hits", "reasons", "rr_net", "context"):
-            self.assertNotIn(gone, r, f"{gone} should no longer exist")
+            self.assertNotIn(gone, r)
 
     def test_identical_input_gives_identical_output(self):
-        # Determinism is the property scoring cost us.
         self.assertEqual(self._run(), self._run())
 
 
-class LiquidityTargetTests(unittest.TestCase):
-    """R follows from where the swings are, rather than being chosen."""
+class OteZoneTests(unittest.TestCase):
+    def test_long_ote_is_the_discount_band(self):
+        low, high = ote_zone(100.0, 200.0, "long")
+        self.assertAlmostEqual(low, 121.4)    # 200 - 78.6%
+        self.assertAlmostEqual(high, 138.2)   # 200 - 61.8%
+
+    def test_short_ote_is_the_premium_band(self):
+        low, high = ote_zone(100.0, 200.0, "short")
+        self.assertAlmostEqual(low, 161.8)
+        self.assertAlmostEqual(high, 178.6)
+
+    def test_degenerate_leg_returns_the_leg(self):
+        self.assertEqual(ote_zone(100.0, 100.0, "long"), (100.0, 100.0))
+
+
+class MssMustBreakTheSweepLegTests(unittest.TestCase):
+    """The MSS has to break a swing the sweep produced.
+
+    Ordering alone is not confirmation: a break of some older, unrelated swing
+    that merely happens after the sweep shares a direction and a timestamp with
+    the reversal and nothing else.
+    """
 
     def setUp(self):
-        self.strategy = AegisSMCStrategy(exchange=object(), config=APPROVED_CONFIG)
-        self.df_htf = make_frame()
-        self.df_ltf = make_frame()
+        base = ICTSequenceTests("test_htf_needs_no_mss_of_its_own")
+        base.setUp()
+        self.base = base
 
-    def _run(self, target):
-        event = {"direction": "long", "kind": "BOS",
-                 "index": self.df_htf.index[-1], "level": 109.0}
-        st = structure_result(event=event, bullish_bos=True)
-        fvg = {"index": self.df_ltf.index[-1], "displacement_index": self.df_ltf.index[-2],
-               "direction": "long", "gap_low": 99.0, "gap_high": 101.0, "gap_mid": 100.0}
+    def _run(self, broken_offset):
+        b = self.base
+        sweep_idx = b.sweep["index"]
+        broken = (b.df_ltf.index[b.df_ltf.index.get_loc(sweep_idx) + broken_offset]
+                  if broken_offset is not None else None)
+        event = {"direction": "long", "kind": "CHOCH",
+                 "index": b.df_ltf.index[-10], "level": 104.0,
+                 "broken_swing_index": broken}
+        ltf_struct = structure_result(event=event, bullish_choch=True)
         with (
-            patch("strategy.aegis_strategy.latest_structure_event", return_value=st),
-            patch("strategy.aegis_strategy.detect_structure", return_value=st),
-            patch("strategy.aegis_strategy.fair_value_gaps",
-                  return_value={"bullish_fvgs": [fvg], "bearish_fvgs": []}),
-            patch("strategy.aegis_strategy.atr", return_value=pd.Series([0.0])),
+            patch("strategy.aegis_strategy.latest_structure_event",
+                  return_value=structure_result()),
+            patch("strategy.aegis_strategy.detect_structure", return_value=ltf_struct),
+            patch("strategy.aegis_strategy.atr", return_value=pd.Series([1.0])),
             patch("strategy.aegis_strategy.is_fvg_mitigated", return_value=False),
-            patch("strategy.aegis_strategy.detect_liquidity_sweep", return_value=True),
-            patch("strategy.aegis_strategy.liquidity_inflection", return_value=90.0),
-            patch("strategy.aegis_strategy.liquidity_target", return_value=target),
+            patch("strategy.aegis_strategy.find_liquidity_sweep", return_value=dict(b.sweep)),
+            patch("strategy.aegis_strategy.liquidity_target", return_value=None),
+            patch("strategy.aegis_strategy.fair_value_gaps") as fvgs,
         ):
-            return self.strategy._check_direction(self.df_htf, self.df_ltf, "long")
+            fvgs.side_effect = lambda df, **kw: (
+                {"bullish_fvgs": [b.poi], "bearish_fvgs": []}
+                if df is b.df_htf else
+                {"bullish_fvgs": [b.entry_fvg], "bearish_fvgs": []}
+            )
+            return b.strategy._check_direction(b.df_htf, b.df_ltf, "long")
 
-    def test_rr_is_derived_from_the_swing(self):
-        # entry 100, stop 90 -> risk 10; a swing at 125 is 2.5R, not 3R.
-        r = self._run(125.0)
-        self.assertTrue(r["valid"])
-        self.assertEqual(r["tp"], 125.0)
-        self.assertAlmostEqual(r["rr"], 2.5)
-        self.assertEqual(r["tp_source"], "swing")
+    def test_breaking_a_swing_after_the_sweep_is_valid(self):
+        r = self._run(broken_offset=2)
+        self.assertTrue(r["valid"], r.get("reason"))
 
-    def test_a_distant_swing_gives_a_larger_r(self):
-        r = self._run(160.0)
-        self.assertAlmostEqual(r["rr"], 6.0)
-
-    def test_falls_back_to_the_multiple_without_a_swing(self):
-        r = self._run(None)
-        self.assertEqual(r["tp_source"], "multiple")
-        self.assertAlmostEqual(r["rr"], 3.0)
-
-    def test_a_target_on_the_wrong_side_is_rejected(self):
-        r = self._run(95.0)
+    def test_breaking_an_older_swing_is_rejected(self):
+        r = self._run(broken_offset=-5)
         self.assertFalse(r["valid"])
-        self.assertIn("wrong side", r["reason"])
+        self.assertIn("older than the sweep", r["reason"])
+
+    def test_no_broken_swing_recorded_is_rejected(self):
+        r = self._run(broken_offset=None)
+        self.assertFalse(r["valid"])
+
+
+if __name__ == "__main__":
+    unittest.main()
