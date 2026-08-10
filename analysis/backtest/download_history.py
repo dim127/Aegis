@@ -21,7 +21,7 @@ from strategy.aegis_strategy import AegisSMCStrategy
 TFS = ("1m", "5m", "15m", "1h", "4h")
 
 
-def fetch_binance_window(exchange, symbol: str, tf: str, since_ms: int, until_ms: int) -> list:
+def fetch_window(exchange, symbol: str, tf: str, since_ms: int, until_ms: int) -> list:
     candles = []
     cursor = since_ms
     while cursor < until_ms:
@@ -40,13 +40,13 @@ def fetch_binance_window(exchange, symbol: str, tf: str, since_ms: int, until_ms
 def download_pair(strategy, symbol: str, tfs, days: int, force: bool) -> None:
     since_ms = int((datetime.now(timezone.utc) - timedelta(days=days)).timestamp() * 1000)
     until_ms = int((datetime.now(timezone.utc) + timedelta(minutes=5)).timestamp() * 1000)
-    exchange = ccxt.binanceusdm({"enableRateLimit": True, "timeout": 30000})
+    exchange = ccxt.hyperliquid({"enableRateLimit": True, "timeout": 30000})
     for tf in tfs:
         if not force and has_cached(symbol, tf, days):
             print(f"  {symbol} {tf}: cached, skipping")
             continue
         try:
-            candles = fetch_binance_window(exchange, symbol, tf, since_ms, until_ms)
+            candles = fetch_window(exchange, symbol, tf, since_ms, until_ms)
         except Exception as exc:
             print(f"  {symbol} {tf}: failed ({exc})")
             continue
@@ -82,7 +82,7 @@ def main() -> None:
     pairs = [AegisSMCStrategy._normalize_pair(p.strip())
              for p in args.pairs.split(",") if p.strip()] if args.pairs else strategy.pairs
 
-    print(f"Downloading {args.days} days from binance for {len(pairs)} pairs x {len(tfs)} timeframes")
+    print(f"Downloading {args.days} days from hyperliquid for {len(pairs)} pairs x {len(tfs)} timeframes")
     for symbol in pairs:
         download_pair(strategy, symbol, tfs, args.days, args.force)
     print("Done.")

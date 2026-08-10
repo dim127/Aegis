@@ -36,49 +36,19 @@ def format_setup_message(setup: dict) -> str:
         "```",
         f"Entry  {fmt_price(entry)}",
         f"SL     {fmt_price(setup['sl'], entry)}   ({setup.get('risk_pct', 0):.2f}%)",
-        f"TP     {fmt_price(setup['tp'], entry)}   ({setup['rr']:.0f}R)",
+        f"TP     {fmt_price(setup['tp'], entry)}   ({setup['rr']:.2f}R)",
         "```",
-        f"Konfluensi {setup['confluence']}/8 · RR bersih 1:{setup.get('rr_net', setup['rr']):.2f}",
         "",
+        f"1. {setup.get('poi_label', '')}",
+        f"2. {setup.get('sweep_label', '')}",
+        f"3. {setup.get('mss_label', '')}",
+        f"4. {setup.get('ote_label', '')}",
+        f"5. {setup.get('fvg_label', '')}",
+        "",
+        f"_{ts_str}_",
     ]
-
-    for reason in setup.get("reasons") or []:
-        lines.append(f"• {reason}")
-
-    context_line = format_context_line(setup)
-    if context_line:
-        lines += ["", context_line]
-
-    lines += ["", f"_{ts_str}_"]
     return "\n".join(lines)
 
-
-def format_context_line(setup: dict) -> str:
-    """Market context as one scannable line instead of a block.
-
-    The full breakdown was accurate and unreadable on a phone. Everything here
-    is observed data and none of it filters anything — it is there to inform the
-    decision, so it has to be glanceable to be worth sending at all.
-    """
-    ctx = setup.get("context") or {}
-    if not ctx:
-        return ""
-
-    parts = []
-    oi = ctx.get("open_interest")
-    if oi is not None:
-        change = ctx.get("oi_change_24h_pct")
-        suffix = f" {change:+.1f}%" if change is not None else ""
-        parts.append(f"OI {oi/1000:.0f}K{suffix}")
-    if ctx.get("funding_bp") is not None:
-        parts.append(f"Funding {ctx['funding_bp']:+.2f}bp")
-    if ctx.get("volume_ratio") is not None:
-        parts.append(f"Vol {ctx['volume_ratio']:.2f}x")
-    liq = ctx.get("liquidity") or {}
-    if liq.get("bid_share") is not None:
-        side = "bid" if liq["bid_share"] > 0.5 else "ask"
-        parts.append(f"Book {liq['bid_share']*100:.0f}% {side}")
-    return "_" + " · ".join(parts) + "_" if parts else ""
 
 
 def format_heartbeat(report: dict) -> str:
@@ -132,48 +102,6 @@ def _base(signal: dict) -> str:
 def _side(signal: dict) -> str:
     return "LONG " if signal.get("direction") == "long" else "SHORT"
 
-
-def format_market_context(setup: dict) -> list:
-    """Observed market state around a setup.
-
-    Kept visually separate from the confluence factors: those are what fired the
-    setup, this is what helps you judge it. None of it filters anything.
-    """
-    ctx = setup.get("context") or {}
-    if not ctx:
-        return []
-
-    entry = setup.get("entry")
-    lines = ["*Konteks Pasar* _(data asli, bukan filter)_"]
-
-    if ctx.get("open_interest") is not None:
-        change = ctx.get("oi_change_24h_pct")
-        suffix = ""
-        if change is not None:
-            suffix = f" ({change:+.2f}%/24j, {'dibangun' if change > 0 else 'diurai'})"
-        lines.append(f"  • OI: {ctx['open_interest']:,.0f}{suffix}")
-
-    if ctx.get("funding_bp") is not None:
-        z = ctx.get("funding_z")
-        side = "long bayar short" if ctx["funding_bp"] > 0 else "short bayar long"
-        ztext = "" if z is None else f", z={z:+.2f}"
-        lines.append(f"  • Funding: {ctx['funding_bp']:+.3f}bp — {side}{ztext}")
-
-    if ctx.get("volume_ratio") is not None:
-        lines.append(f"  • Volume: {ctx['volume_ratio']:.2f}x rata-rata")
-
-    liq = ctx.get("liquidity") or {}
-    if liq.get("bid_share") is not None:
-        dom = "bid tebal" if liq["bid_share"] > 0.5 else "ask tebal"
-        lines.append(f"  • Order book: {liq['bid_share']*100:.0f}% bid — {dom}")
-    for key, label in (("bid_wall", "Dinding bid"), ("ask_wall", "Dinding ask")):
-        wall = liq.get(key)
-        if wall:
-            lines.append(f"    {label}: ${fmt_price(wall['price'], entry)} "
-                         f"({wall['dist_pct']:+.2f}%)")
-
-    lines.append("")
-    return lines
 
 
 def format_no_trade_message() -> str:

@@ -33,8 +33,7 @@ def make_position(**over):
         "pair": "BTC/USDT:USDT", "tf_htf": "15m", "tf_ltf": "1m",
         "direction": "long", "timestamp": "2026-01-01T00:00:00Z",
         "entry": 100.0, "sl": 90.0, "tp": 130.0, "risk": 10.0,
-        "rr": 3.0, "confluence": 4,
-    }
+        "rr": 3.0,    }
     sig.update(over)
     return Position(sig)
 

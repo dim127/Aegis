@@ -1,3 +1,35 @@
+"""Aegis — ICT reversal detection on Hyperliquid perpetuals.
+
+The two timeframes have different jobs. The HTF supplies the *zone*; the LTF
+supplies the *confirmation*. Demanding a structure shift on both was the earlier
+mistake — it asked the higher timeframe to do the lower one's work, and rejected
+every candidate.
+
+Sequence, in order, all required:
+
+    1. POI          an unmitigated FVG on the HTF — the zone price must reach
+    2. Retracement  price actually trades back into that zone
+    3. Sweep        liquidity taken *inside* the POI, then reclaimed
+    4. MSS          a structure shift on the LTF, breaking the sweep — the
+                    confirmation that the reversal is underway
+    5. Entry        a fresh LTF FVG sitting in the OTE band (61.8-78.6%) of the
+                    leg that produced the MSS
+
+Nothing is scored, counted or weighted. There is no 3/8 to reach and no minimum
+tally — a score can sit at 4/8 and mean nothing in particular, which is the
+ambiguity that made setups equivocal. Each condition is binary, checked in
+order, and a rejection always names the step that failed.
+
+Levels come from the structure that produced the setup:
+
+    entry   the OTE-zone FVG midpoint
+    stop    behind the sweep itself — the level whose violation disproves the
+            reversal thesis
+    target  the nearest opposing swing, where the liquidity actually sits
+
+So R is an *output*, not an input: whatever the distance between those levels
+makes it, rather than a number chosen in advance and imposed on the chart.
+"""
 import json
 from pathlib import Path
 
@@ -6,11 +38,7 @@ import pandas as pd
 
 from indicators import (
     atr, detect_structure, fair_value_gaps, is_fvg_mitigated, latest_structure_event,
-    is_breakout_candle, liquidity_inflection, order_block_for_event, detect_liquidity_sweep
-)
-from market_metrics import (
-    PositioningSeries, estimate_liquidation_clusters, fetch_liquidity_walls,
-    fetch_open_interest, long_short_24h, volume_context,
+    liquidity_inflection, liquidity_target, find_liquidity_sweep, ote_zone,
 )
 
 
@@ -18,67 +46,28 @@ class AegisSMCStrategy:
 
     DEFAULT_PAIRS = ["BTC", "ETH", "BNB", "SOL", "HYPE", "XRP", "LINK"]
     DEFAULT_RR_TARGET = 3.0
-    DEFAULT_ATR_PROXIMITY = 2.0
-    DEFAULT_MIN_CONFLUENCE = 3
-    # Structure, FVG and sweep are mandatory, and each contributes exactly one
-    # reason — so total confluence is >= 3 before any threshold is consulted,
-    # which is why min_confluence could never reject anything. Only the soft
-    # factors carry information a threshold can act on.
-    HARD_FACTORS = ("structure", "fvg", "sweep")
-    SOFT_FACTORS = ("ob", "breakout", "long_short", "cluster")
-    DEFAULT_COSTS = {
-        "maker_fee_pct": 0.02,
-        "taker_fee_pct": 0.04,
-        "slippage_pct": 0.02,
-        "min_cost_multiple": 8.0,
+    QUOTE = "USDC"
+    TIMEFRAME_DURATIONS = {
+        "1m": pd.Timedelta(minutes=1), "5m": pd.Timedelta(minutes=5),
+        "15m": pd.Timedelta(minutes=15), "1h": pd.Timedelta(hours=1),
+        "4h": pd.Timedelta(hours=4),
     }
-    TIMEFRAME_DURATIONS = {"1m": pd.Timedelta(minutes=1), "5m": pd.Timedelta(minutes=5), "15m": pd.Timedelta(minutes=15), "1h": pd.Timedelta(hours=1), "4h": pd.Timedelta(hours=4)}
+    COMBINATIONS = [("15m", "1m"), ("1h", "5m"), ("4h", "15m")]
 
     def __init__(self, exchange=None, config: dict | None = None):
         if exchange is None:
-            exchange = ccxt.binanceusdm({
-                "enableRateLimit": True,
-                "timeout": 20000,
-                "options": {"defaultType": "future"},
-            })
+            exchange = ccxt.hyperliquid({"enableRateLimit": True, "timeout": 20000})
         self.exchange = exchange
         config = config if config is not None else self._load_config()
         smc_config = config.get("smc", {})
-        self.pairs = [self._normalize_pair(pair) for pair in config.get("smc_pairs", self.DEFAULT_PAIRS)]
+        self.pairs = [self._normalize_pair(p) for p in config.get("smc_pairs", self.DEFAULT_PAIRS)]
         self.rr_target = float(smc_config.get("rr_target", self.DEFAULT_RR_TARGET))
-        self.atr_proximity = float(smc_config.get("atr_proximity", self.DEFAULT_ATR_PROXIMITY))
-        self.min_confluence = int(smc_config.get("min_confluence", self.DEFAULT_MIN_CONFLUENCE))
-        # Defaults to 0: confluence scored p=1.000 against outcomes over 79
-        # trades, so a tighter gate would cut signal volume with no evidence of
-        # better quality. Making the knob work is correctness; turning it up
-        # without data would be guessing.
-        self.min_soft_confluence = int(smc_config.get("min_soft_confluence", 0))
+        self.sl_atr_buffer = float(smc_config.get("sl_atr_buffer", 1.5))
 
-        market_cfg = smc_config.get("market", {})
-        self.long_short_enabled = bool(market_cfg.get("long_short_enabled", True))
-        self.liquidation_enabled = bool(market_cfg.get("liquidation_enabled", True))
-        self.liquidation_leverage = float(market_cfg.get("liquidation_leverage", 10.0))
-        self.cluster_proximity_pct = float(market_cfg.get("cluster_proximity_pct", 3.0))
-        self.market_cache_minutes = int(market_cfg.get("cache_minutes", 60))
-        self.long_short_source = market_cfg.get("long_short_source", "top_position")
-
-        # Round-trip cost: maker on the limit entry, taker on the STOP_MARKET /
-        # TAKE_PROFIT_MARKET exit, plus expected slippage on the market exit.
-        costs = {**self.DEFAULT_COSTS, **config.get("risk", {}).get("costs", {})}
-        self.round_trip_cost_pct = (
-            float(costs["maker_fee_pct"])
-            + float(costs["taker_fee_pct"])
-            + float(costs["slippage_pct"])
-        )
-        self.min_cost_multiple = float(costs["min_cost_multiple"])
-        self.min_stop_pct = self.round_trip_cost_pct * self.min_cost_multiple
-
-        if len(self.pairs) < 5:
-            raise ValueError("smc_pairs must have at least 5 pairs")
-        if self.rr_target < self.DEFAULT_RR_TARGET:
-            raise ValueError("smc.rr_target cannot be below 3.0")
-        if self.min_confluence < self.DEFAULT_MIN_CONFLUENCE or self.min_confluence > 8:
-            raise ValueError("smc.min_confluence must be between 3 and 8")
+        if len(self.pairs) < 1:
+            raise ValueError("smc_pairs must not be empty")
+        if self.rr_target <= 0:
+            raise ValueError("smc.rr_target must be positive")
 
     @staticmethod
     def _load_config() -> dict:
@@ -88,39 +77,13 @@ class AegisSMCStrategy:
         with config_path.open() as config_file:
             return json.load(config_file)
 
-    @staticmethod
-    def _normalize_pair(pair: str) -> str:
-        return pair if "/" in pair else f"{pair}/USDT:USDT"
-
     @classmethod
-    def _count_soft(cls, factor_names) -> int:
-        """How many optional factors fired, ignoring the mandatory three."""
-        return sum(1 for name in factor_names if name in cls.SOFT_FACTORS)
-
-    @classmethod
-    def _event_confirmed_at(cls, event: dict | None, timeframe: str):
-        """When a structure event became known, not when its candle opened.
-
-        Events carry the candle's opening timestamp, but a break is only
-        confirmed once that candle closes. Comparing the opening timestamp
-        against LTF timestamps let a gap forming *inside* the HTF candle — while
-        the break was still unconfirmed — count as having formed after it.
-
-        On a 4h anchor that window is up to four hours of look-ahead.
-        """
-        if event is None:
-            return None
-        opened = event["index"]
-        duration = cls.TIMEFRAME_DURATIONS.get(timeframe)
-        return opened + duration if duration is not None else opened
+    def _normalize_pair(cls, pair: str) -> str:
+        return pair if "/" in pair else f"{pair}/{cls.QUOTE}:{cls.QUOTE}"
 
     @staticmethod
     def _fmt(price: float) -> str:
-        """Format a price with enough decimals to stay meaningful.
-
-        A flat 2dp renders XRP as '1.06' and collapses its risk to a single
-        cent, which is where the sizing blow-ups came from.
-        """
+        """Decimals scaled to magnitude, so sub-dollar pairs stay readable."""
         magnitude = abs(price)
         if magnitude >= 1000:
             decimals = 2
@@ -133,7 +96,7 @@ class AegisSMCStrategy:
         return f"{price:.{decimals}f}"
 
     def _quantizer(self, symbol: str):
-        """Callable snapping a price to the symbol's tick size, or None."""
+        """Snap prices to the exchange tick, so a quoted level can actually exist."""
         exchange = self.exchange
         if not hasattr(exchange, "price_to_precision"):
             return None
@@ -163,419 +126,218 @@ class AegisSMCStrategy:
         now = pd.Timestamp.now(tz="UTC") if now is None else pd.Timestamp(now)
         if now.tzinfo is None:
             now = now.tz_localize("UTC")
+        # Drop the still-forming candle. Structure read from a bar that can
+        # still change is structure that can un-happen.
         df = df.loc[df.index + duration <= now]
         return df if len(df) >= 50 else None
 
     @staticmethod
     def _htf_context(df_htf: pd.DataFrame, direction: str) -> tuple:
-        """Heavy HTF analysis reused across identical HTF slices in a replay scan."""
+        """Heavy HTF analysis, reused across identical slices during a replay."""
         structure_htf = latest_structure_event(df_htf, direction, window=15)
         atr_htf_val = atr(df_htf, period=14).iloc[-1] if len(df_htf) > 14 else 0
         return structure_htf, atr_htf_val
 
-    def _check_direction(self, df_htf: pd.DataFrame, df_ltf: pd.DataFrame, direction: str, tf_htf: str = "15m", tf_ltf: str = "1m", htf_context: tuple | None = None, market_ctx: dict | None = None, quantize=None) -> dict:
+    def _check_direction(self, df_htf: pd.DataFrame, df_ltf: pd.DataFrame, direction: str,
+                         tf_htf: str = "15m", tf_ltf: str = "1m",
+                         htf_context: tuple | None = None, quantize=None) -> dict:
         bull_dir = direction == "long"
         quantize = quantize or (lambda price: price)
 
         if htf_context is not None:
-            structure_htf, atr_htf_val = htf_context
+            structure_htf, _ = htf_context
         else:
-            structure_htf, atr_htf_val = self._htf_context(df_htf, direction)
+            structure_htf, _ = self._htf_context(df_htf, direction)
 
         structure_ltf = detect_structure(df_ltf, window=15)
         atr_ltf_val = atr(df_ltf, period=14).iloc[-1] if len(df_ltf) > 14 else 0
-        fvg_ltf_info = fair_value_gaps(df_ltf, lookback=60)
+        fvg_info = fair_value_gaps(df_ltf, lookback=60)
+        fvg_htf = fair_value_gaps(df_htf, lookback=60)
 
-        # Gate on the raw break so behaviour matches the pre-classification code;
-        # the CHOCH / BOS / BREAK distinction is reported, not filtered on, until
-        # the backtest says which kinds are worth keeping.
+        # ---- 1. HTF point of interest: an unmitigated FVG -------------------
+        # The higher timeframe supplies the zone, not a confirmation. Requiring
+        # an MSS here asks it to do the lower timeframe's job.
+        htf_fvgs = (fvg_htf["bullish_fvgs"] if bull_dir else fvg_htf["bearish_fvgs"])
+        poi = None
+        for fvg in sorted(htf_fvgs, key=lambda f: f["index"], reverse=True):
+            if not is_fvg_mitigated(df_htf, fvg["gap_low"], fvg["gap_high"], fvg["index"]):
+                poi = fvg
+                break
+        if poi is None:
+            return {"valid": False, "reason": f"No unmitigated {tf_htf} FVG (POI)"}
+
+        # ---- 2. Price retraced into the POI --------------------------------
+        low_now = float(df_ltf["Low"].iloc[-1])
+        high_now = float(df_ltf["High"].iloc[-1])
+        touched = (df_ltf["Low"].tail(60) <= poi["gap_high"]).any() and \
+                  (df_ltf["High"].tail(60) >= poi["gap_low"]).any()
+        if not touched:
+            return {"valid": False, "reason": f"Price has not retraced into the {tf_htf} FVG"}
+
+        # ---- 3. Liquidity sweep inside the POI ------------------------------
+        sweep = find_liquidity_sweep(df_ltf, direction, window=30)
+        if sweep is None:
+            return {"valid": False, "reason": "No liquidity sweep"}
+        if not (poi["gap_low"] <= sweep["price"] <= poi["gap_high"]):
+            return {"valid": False,
+                    "reason": f"Sweep at {self._fmt(sweep['price'])} sits outside the {tf_htf} FVG"}
+
+        # ---- 4. MSS on the LTF, breaking the sweep --------------------------
+        # The confirmation, and it must come after the sweep it confirms.
         if bull_dir:
-            struct_htf = structure_htf.get(
-                "bullish_break",
-                structure_htf["bullish_choch"] or structure_htf["bullish_bos"],
-            )
-            confirm_ltf = structure_ltf["bullish_choch"]
-            fvg_below = fvg_ltf_info["bullish_fvgs"]
+            ltf_shift = structure_ltf["bullish_choch"] or structure_ltf["bullish_bos"]
         else:
-            struct_htf = structure_htf.get(
-                "bearish_break",
-                structure_htf["bearish_choch"] or structure_htf["bearish_bos"],
-            )
-            confirm_ltf = structure_ltf["bearish_choch"]
-            fvg_below = fvg_ltf_info["bearish_fvgs"]
+            ltf_shift = structure_ltf["bearish_choch"] or structure_ltf["bearish_bos"]
+        if not ltf_shift:
+            return {"valid": False, "reason": f"No MSS on {tf_ltf} after the sweep"}
 
-        # 1. HTF structure shift
-        reason_htf = None
-        if structure_htf["bullish_choch"] if bull_dir else structure_htf["bearish_choch"]:
-            reason_htf = f"{tf_htf.upper()} CHOCH {'Bullish' if bull_dir else 'Bearish'}"
-        elif structure_htf["bullish_bos"] if bull_dir else structure_htf["bearish_bos"]:
-            reason_htf = f"{tf_htf.upper()} BOS {'Bullish' if bull_dir else 'Bearish'}"
-        elif struct_htf:
-            reason_htf = f"{tf_htf.upper()} level break {'Bullish' if bull_dir else 'Bearish'} (no trend)"
+        mss_event = structure_ltf["event"]
+        if mss_event is None or mss_event["direction"] != direction:
+            return {"valid": False, "reason": f"No {tf_ltf} MSS in this direction"}
+        structure_time = mss_event["index"]
+        event_kind = mss_event["kind"]
+        if structure_time <= sweep["index"]:
+            return {"valid": False, "reason": "MSS did not follow the sweep"}
 
-        # 2. 1m CHOCH alignment
-        reason_ltf = None
-        if confirm_ltf:
-            reason_ltf = f"{tf_ltf.upper()} CHOCH {'Bullish' if bull_dir else 'Bearish'} aligned"
+        # The MSS must break a swing belonging to the leg the sweep produced,
+        # not merely happen afterwards. Without this, a break of some unrelated
+        # older swing counts as confirmation of a reversal it says nothing
+        # about — the sweep and the shift would only share a direction and an
+        # ordering, which is coincidence rather than structure.
+        broken = mss_event.get("broken_swing_index")
+        if broken is None or broken < sweep["index"]:
+            return {"valid": False,
+                    "reason": "MSS broke a swing older than the sweep"}
 
-        # 3. FVG on 1m
+        # ---- 5. Entry: LTF FVG inside the OTE of the MSS leg ----------------
+        leg = df_ltf.loc[sweep["index"]:structure_time]
+        leg_low, leg_high = float(leg["Low"].min()), float(leg["High"].max())
+        ote_low, ote_high = ote_zone(leg_low, leg_high, direction)
+
+        candidate_fvgs = (fvg_info["bullish_fvgs"] if bull_dir else fvg_info["bearish_fvgs"])
         best_fvg = None
-        reason_fvg = None
-        # Timed by the event candle's *open*, deliberately.
-        #
-        # This looks like a cross-timeframe hazard and is not one. _ohlcv_to_df
-        # drops the still-forming candle, so an HTF event always comes from a
-        # candle that has already closed — there is no look-ahead to fix.
-        #
-        # Switching to the confirmation time (see _event_confirmed_at) would
-        # exclude any LTF gap formed inside the HTF candle. In SMC that gap is
-        # usually created *by* the displacement that broke structure, so
-        # excluding it would drop the most canonical entry of all. Which
-        # convention performs better is an empirical question, not an obvious
-        # one: both are exported to the backtest as fvg_after_open and
-        # fvg_after_confirm so factor_edge can settle it.
-        structure_events = [
-            event for event in [structure_htf["event"], structure_ltf["event"]]
-            if event is not None and event["direction"] == direction
-        ]
-        structure_time = max((event["index"] for event in structure_events), default=None)
-        structure_confirm_time = max(
-            (t for t in (
-                self._event_confirmed_at(event, tf)
-                for event, tf in ((structure_htf["event"], tf_htf),
-                                  (structure_ltf["event"], tf_ltf))
-                if event is not None and event["direction"] == direction
-            ) if t is not None),
-            default=None,
-        )
-        if bull_dir:
-            sorted_fvgs = sorted(fvg_below, key=lambda x: x["gap_high"], reverse=True)
-            if sorted_fvgs:
-                for fvg in sorted_fvgs:
-                    if structure_time is not None and fvg["index"] < structure_time:
-                        continue
-                    if not is_fvg_mitigated(df_ltf, fvg["gap_low"], fvg["gap_high"], fvg["index"]):
-                        best_fvg = fvg
-                        break
-            if best_fvg:
-                reason_fvg = f"{tf_ltf.upper()} Bullish FVG ${self._fmt(best_fvg['gap_low'])}-${self._fmt(best_fvg['gap_high'])} (fresh)"
-        else:
-            sorted_fvgs = sorted(fvg_below, key=lambda x: x["gap_low"])
-            if sorted_fvgs:
-                for fvg in sorted_fvgs:
-                    if structure_time is not None and fvg["index"] < structure_time:
-                        continue
-                    if not is_fvg_mitigated(df_ltf, fvg["gap_low"], fvg["gap_high"], fvg["index"]):
-                        best_fvg = fvg
-                        break
-            if best_fvg:
-                reason_fvg = f"{tf_ltf.upper()} Bearish FVG ${self._fmt(best_fvg['gap_low'])}-${self._fmt(best_fvg['gap_high'])} (fresh)"
-
-        entry = best_fvg["gap_mid"] if best_fvg else None
-
-        # 4. OB from the 15m structure displacement, measured against the limit entry.
-        reason_ob = None
-        structure_event_htf = structure_htf["event"] if struct_htf else None
-        associated_ob = None
-        if entry is not None and structure_event_htf is not None:
-            associated_ob = order_block_for_event(df_htf, structure_event_htf["index"], direction)
-            if associated_ob is not None and not associated_ob["fully_mitigated"] and associated_ob["mitigation_ratio"] < 0.5 and atr_htf_val > 0:
-                ob_price = associated_ob["high"] if bull_dir else associated_ob["low"]
-                dist = abs(entry - ob_price)
-                if dist < atr_htf_val * self.atr_proximity:
-                    reason_ob = f"{'Bullish' if bull_dir else 'Bearish'} OB ${self._fmt(ob_price)} ({dist/atr_htf_val:.1f} ATR)"
-
-        # 5. Breakout candle impulse
-        reason_breakout = None
-        if is_breakout_candle(df_ltf, direction, lookback=5, vol_multiplier=1.15):
-            reason_breakout = f"{tf_ltf.upper()} impulsive + volume spike"
-            
-        # 6. Liquidity Sweep before CHOCH
-        reason_sweep = None
-        if structure_time is not None and detect_liquidity_sweep(df_ltf, direction, before=structure_time, window=30):
-            reason_sweep = f"{tf_ltf.upper()} Liquidity Sweep before CHOCH"
-
-        # 7. Binance Long/Short 24h (contrarian: crowd against the direction)
-        reason_long_short = None
-        if market_ctx is not None and market_ctx.get("long_short"):
-            ls = market_ctx["long_short"]
-            crowd = "long" if ls["long_pct"] > ls["short_pct"] else "short"
-            if crowd != direction:
-                reason_long_short = (
-                    f"Binance Long/Short 24h: {ls['long_pct']:.1f}%L/"
-                    f"{ls['short_pct']:.1f}%S (crowded {crowd}, supports {direction})"
-                )
-
-        # 8. Liquidation cluster near the entry.
-        #
-        # Which side should count is genuinely contested, and the code used to
-        # contradict its own comment, so both readings are computed and only one
-        # is scored until data settles it:
-        #
-        #   sweep    (current) long looks below — sell-side liquidity gets swept
-        #            first, then price reverses up. Matches the mandatory
-        #            liquidity-sweep gate.
-        #   draw     long looks above — clusters are magnets, price is drawn
-        #            toward the pool it will run. The classic ICT reading.
-        #
-        # cluster_side_sweep / cluster_side_draw go to the backtest so
-        # factor_edge can decide. Guessing here is how factor 7 got its
-        # direction baked in unmeasured.
-        reason_cluster = None
-        cluster_sweep = cluster_draw = None
-        if market_ctx is not None and market_ctx.get("clusters") and best_fvg is not None:
-            clusters = market_ctx["clusters"]
-            entry_price = best_fvg["gap_mid"]
-
-            def _within(target):
-                if target is None or entry_price <= 0:
-                    return None
-                dist = abs(target["price"] - entry_price) / entry_price * 100.0
-                return (dist, target) if dist <= self.cluster_proximity_pct else None
-
-            below, above = _within(clusters["nearest_below"]), _within(clusters["nearest_above"])
-            sweep_hit = below if bull_dir else above
-            draw_hit = above if bull_dir else below
-            cluster_sweep = sweep_hit is not None
-            cluster_draw = draw_hit is not None
-
-            if sweep_hit is not None:
-                dist_pct, target = sweep_hit
-                reason_cluster = (
-                    f"Liquidation cluster ${self._fmt(target['price'])} "
-                    f"({dist_pct:.1f}% dari entry, {target['strength']})"
-                )
-
-        # Mandatory: structure shift (15m CHOCH/BOS OR 1m CHOCH).
-        has_structure = struct_htf or confirm_ltf
-        if not has_structure:
-            return {"valid": False, "reason": f"No structure shift ({tf_htf}/{tf_ltf} CHOCH/BOS)",
-                    "reasons": [], "confluence": 0}
-
-        # Mandatory: fresh FVG
+        for fvg in sorted(candidate_fvgs, key=lambda f: f["index"], reverse=True):
+            if fvg["index"] < sweep["index"]:
+                continue
+            if is_fvg_mitigated(df_ltf, fvg["gap_low"], fvg["gap_high"], fvg["index"]):
+                continue
+            if ote_low <= fvg["gap_mid"] <= ote_high:
+                best_fvg = fvg
+                break
         if best_fvg is None:
-            return {"valid": False, "reason": "No valid FVG for entry",
-                    "reasons": [r for r in [reason_htf, reason_ltf] if r], "confluence": 0}
-
-        # Mandatory: liquidity sweep (break + reversal confirmation)
-        if reason_sweep is None:
-            return {"valid": False, "reason": "No liquidity sweep before structure shift",
-                    "reasons": [r for r in [reason_htf, reason_ltf, reason_fvg] if r], "confluence": 0}
-
-        tagged = [
-            ("structure", reason_htf), ("structure", reason_ltf), ("fvg", reason_fvg),
-            ("ob", reason_ob), ("breakout", reason_breakout), ("sweep", reason_sweep),
-            ("long_short", reason_long_short), ("cluster", reason_cluster),
-        ]
-        reasons = [text for _, text in tagged if text]
-        confluence = len(reasons)
-        soft_hits = self._count_soft(name for name, text in tagged if text)
-
-        if soft_hits < self.min_soft_confluence:
             return {"valid": False,
-                    "reason": (f"Soft confluence too low: {soft_hits}/{len(self.SOFT_FACTORS)} "
-                               f"(need {self.min_soft_confluence})"),
-                    "reasons": reasons, "confluence": confluence, "soft_hits": soft_hits}
+                    "reason": (f"No fresh {tf_ltf} FVG inside OTE "
+                               f"{self._fmt(ote_low)}-{self._fmt(ote_high)}")}
 
-        sl = liquidity_inflection(df_ltf, direction, before=best_fvg["index"])
-        if sl is None:
-            return {"valid": False, "reason": "No confirmed swing before FVG for Stop Loss",
-                    "reasons": reasons, "confluence": confluence}
+        # ---- 6. Levels -------------------------------------------------------
+        entry = quantize(best_fvg["gap_mid"])
+        # Stop goes behind the sweep itself — the level whose violation would
+        # mean the reversal thesis was wrong.
+        buffer = atr_ltf_val * self.sl_atr_buffer
+        swing = sweep["price"]
+        sl = quantize(swing - buffer if bull_dir else swing + buffer)
 
-        sl_buffer = atr_ltf_val * 1.5
-        if bull_dir:
-            sl -= sl_buffer
-        else:
-            sl += sl_buffer
-
-        # Snap to the exchange tick before measuring risk: the traded prices are
-        # what the risk is actually taken on.
-        entry = quantize(entry)
-        sl = quantize(sl)
-
-        if bull_dir:
-            risk = entry - sl
-            if risk <= 0:
-                return {"valid": False,
-                        "reason": f"Invalid SL: entry ${self._fmt(entry)} <= SL ${self._fmt(sl)}",
-                        "reasons": reasons, "confluence": confluence}
-            tp = quantize(entry + (risk * self.rr_target))
-        else:
-            risk = sl - entry
-            if risk <= 0:
-                return {"valid": False,
-                        "reason": f"Invalid SL: entry ${self._fmt(entry)} >= SL ${self._fmt(sl)}",
-                        "reasons": reasons, "confluence": confluence}
-            tp = quantize(entry - (risk * self.rr_target))
-
-        # Cost gate: a stop only a few ticks wide is noise, and round-trip fees
-        # eat most of 1R. Reject before the setup ever reaches the journal.
-        risk_pct = risk / entry * 100.0
-        if risk_pct < self.min_stop_pct:
+        risk = (entry - sl) if bull_dir else (sl - entry)
+        if risk <= 0:
             return {"valid": False,
-                    "reason": (f"Stop too tight vs costs: {risk_pct:.3f}% < {self.min_stop_pct:.3f}% "
-                               f"({self.round_trip_cost_pct:.3f}% round-trip x {self.min_cost_multiple:g})"),
-                    "reasons": reasons, "confluence": confluence}
+                    "reason": f"Invalid stop: entry {self._fmt(entry)} vs SL {self._fmt(sl)}"}
 
-        rr = (tp - entry) / risk if bull_dir else (entry - tp) / risk
-        # Net of costs, the reward shrinks and the loss grows by the same amount.
-        cost = entry * self.round_trip_cost_pct / 100.0
-        rr_net = (rr * risk - cost) / (risk + cost)
-
-        action = "BUY LIMIT" if bull_dir else "SELL LIMIT"
-
-        if reason_htf:
-            htf_bias_text = f"{'Bullish' if bull_dir else 'Bearish'} - {reason_htf}"
+        # Target the liquidity, then let R fall out of it. A swing is where
+        # resting orders actually sit, so it is a reason for price to travel;
+        # a fixed multiple is only a number someone picked. Falls back to the
+        # multiple when no opposing swing is in range.
+        target = liquidity_target(df_ltf, direction, entry, window=60)
+        if target is not None:
+            tp = quantize(target)
+            reward = (tp - entry) if bull_dir else (entry - tp)
+            tp_source = "swing"
         else:
-            htf_bias_text = f"{'Bullish' if bull_dir else 'Bearish'} - {reason_ltf or 'BOS'}"
+            tp = quantize(entry + risk * self.rr_target if bull_dir
+                          else entry - risk * self.rr_target)
+            reward = risk * self.rr_target
+            tp_source = "multiple"
 
-        if confirm_ltf and reason_fvg:
-            ltf_conf_text = f"Valid {tf_ltf.upper()} CHOCH + FVG"
-        elif reason_fvg:
-            ltf_conf_text = f"Valid FVG (no {tf_ltf.upper()} CHOCH)"
-        else:
-            ltf_conf_text = "Invalid"
+        if reward <= 0:
+            return {"valid": False, "reason": "Target sits on the wrong side of entry"}
+        rr = reward / risk
 
+        ltf_kind = structure_ltf["event"]["kind"] if structure_ltf["event"] else "MSS"
+        side = "Bullish" if bull_dir else "Bearish"
         return {
             "valid": True,
             "direction": direction,
-            "action": action,
+            "action": "BUY LIMIT" if bull_dir else "SELL LIMIT",
+            "poi_label": (f"{tf_htf.upper()} FVG {self._fmt(poi['gap_low'])}"
+                          f"-{self._fmt(poi['gap_high'])} (POI)"),
+            "sweep_label": (f"sweep {self._fmt(sweep['price'])} di dalam POI "
+                            f"(ambil {self._fmt(sweep['swept_level'])})"),
+            "mss_label": f"{tf_ltf.upper()} MSS {ltf_kind} {side}",
+            "ote_label": f"OTE {self._fmt(ote_low)}-{self._fmt(ote_high)}",
             "entry": entry,
             "sl": sl,
             "tp": tp,
-            "rr": round(rr, 2),
-            "rr_net": round(rr_net, 2),
             "risk": risk,
-            "risk_pct": round(risk_pct, 3),
-            "confluence": confluence,
-            "soft_hits": soft_hits,
-            "reasons": reasons,
+            "risk_pct": round(risk / entry * 100.0, 3),
+            "rr": round(rr, 2),
+            "tp_source": tp_source,
+            "tp_label": (f"swing {'high' if bull_dir else 'low'} {self._fmt(tp)}"
+                         if tp_source == "swing" else f"{self.rr_target:.0f}R multiple"),
+            "event_kind": event_kind,
+            "sweep_price": sweep["price"],
+            "ote_low": ote_low,
+            "ote_high": ote_high,
+            "fvg_label": (f"{tf_ltf.upper()} FVG {self._fmt(best_fvg['gap_low'])}"
+                          f"-{self._fmt(best_fvg['gap_high'])} (entry, dalam OTE)"),
             "timestamp": df_ltf.index[-1],
             "structure_htf": structure_htf["event"],
             "structure_ltf": structure_ltf["event"],
             "fvg_timestamp": best_fvg["index"],
-            # Measured, not gated on: would this setup still qualify under the
-            # stricter rule that the gap must form after the HTF candle closes?
-            "cluster_side_sweep": cluster_sweep,
-            "cluster_side_draw": cluster_draw,
-            "fvg_after_confirm": bool(
-                structure_confirm_time is None
-                or best_fvg["index"] >= structure_confirm_time
-            ),
-            "ob_timestamp": associated_ob["index"] if associated_ob else None,
-            "htf_bias_text": htf_bias_text,
-            "ltf_conf_text": ltf_conf_text,
+            "structure_time": structure_time,
             "management_rules": "Hold until Stop Loss or Take Profit.",
         }
 
     def analyze_pair(self, sym: str, tf_htf: str, tf_ltf: str) -> dict | None:
-        base = sym.split("/")[0]
-        raw_htf = self.exchange.fetch_ohlcv(sym, tf_htf, limit=100)
-        raw_ltf = self.exchange.fetch_ohlcv(sym, tf_ltf, limit=120)
+        raw_htf = self.exchange.fetch_ohlcv(sym, tf_htf, limit=200)
+        raw_ltf = self.exchange.fetch_ohlcv(sym, tf_ltf, limit=200)
         df_htf = self._ohlcv_to_df(raw_htf, tf_htf)
         df_ltf = self._ohlcv_to_df(raw_ltf, tf_ltf)
         if df_htf is None or df_ltf is None:
             return None
 
-        market_ctx = None
-        if self.long_short_enabled or self.liquidation_enabled:
-            market_ctx = {}
-            if self.long_short_enabled:
-                market_ctx["long_short"] = long_short_24h(
-                    sym, self.market_cache_minutes, self.long_short_source
-                )
-            if self.liquidation_enabled:
-                market_ctx["clusters"] = estimate_liquidation_clusters(df_ltf, self.liquidation_leverage)
-
         quantize = self._quantizer(sym)
-
         best = None
-        for direction in ["long", "short"]:
+        for direction in ("long", "short"):
             result = self._check_direction(df_htf, df_ltf, direction, tf_htf, tf_ltf,
-                                           market_ctx=market_ctx, quantize=quantize)
-            if result["valid"]:
-                result["pair"] = sym
-                result["base"] = base
-                result["tf_combo"] = f"{tf_htf}/{tf_ltf}"
-                result["tf_htf"] = tf_htf
-                result["tf_ltf"] = tf_ltf
-                if best is None or self._rank(result) > self._rank(best):
-                    best = result
-        if best is not None:
-            self._attach_market_context(best, df_ltf)
+                                           quantize=quantize)
+            if not result["valid"]:
+                continue
+            result["pair"] = sym
+            result["base"] = sym.split("/")[0]
+            result["tf_combo"] = f"{tf_htf}/{tf_ltf}"
+            result["tf_htf"] = tf_htf
+            result["tf_ltf"] = tf_ltf
+            # Both directions qualifying is rare and means structure is
+            # contested; take the fresher gap rather than scoring them.
+            if best is None or result["fvg_timestamp"] > best["fvg_timestamp"]:
+                best = result
         return best
 
-    def _attach_market_context(self, setup: dict, df_ltf: pd.DataFrame) -> None:
-        """Attach observed market data to a valid setup, for the reader to judge.
-
-        This is deliberately *context*, not confluence: none of it gates or
-        scores the setup. Aegis reports; the decision is the reader's, and a
-        decision needs the state of the market, not just the pattern that fired.
-
-        Only called once a setup is valid — 21 pair/combo evaluations per scan
-        would otherwise burn the REST budget on order book snapshots nobody
-        reads.
-        """
-        symbol = setup["pair"]
-        context: dict = {}
-
-        oi_now = fetch_open_interest(symbol)
-        if oi_now:
-            context["open_interest"] = oi_now["open_interest"]
-            series = PositioningSeries(symbol, "open_interest", "4h")
-            if len(series):
-                context["oi_change_24h_pct"] = series.change_pct(
-                    int(pd.Timestamp.now(tz="UTC").timestamp() * 1000), 24 * 3600 * 1000
-                )
-
-        funding = PositioningSeries(symbol, "funding_rate", "8h")
-        if len(funding):
-            now_ms = int(pd.Timestamp.now(tz="UTC").timestamp() * 1000)
-            context["funding_bp"] = funding.as_of(now_ms)
-            context["funding_z"] = funding.zscore_as_of(now_ms)
-
-        volume = volume_context(df_ltf)
-        if volume:
-            context["volume_ratio"] = volume["ratio"]
-
-        walls = fetch_liquidity_walls(symbol, setup["entry"])
-        if walls:
-            context["liquidity"] = walls
-
-        setup["context"] = context
-
-    @staticmethod
-    def _rank(setup: dict) -> tuple:
-        """Rank competing long/short setups on the same pair and combo.
-
-        Freshness leads, not confluence. `rr` is always `rr_target` by
-        construction so it carries no information, and confluence turned out to
-        be directionally biased: perpetual crowds sit net long essentially all
-        the time (measured 1309/1309 observations above 50% long across 7
-        pairs), so the contrarian factor adds +1 to every short and never to a
-        long. Ranking on confluence therefore handed almost every tie to the
-        short side regardless of setup quality.
-        """
-        return (setup["fvg_timestamp"], setup["confluence"], setup["rr_net"])
-
     def _journal_signal(self, setup: dict) -> None:
-        """Persist a valid setup to the signal journal (non-fatal on errors)."""
         try:
             import db
             entry = dict(setup)
             entry["signal_time"] = setup["timestamp"].isoformat()
             if db.save_signal(entry):
                 print(f"  journal: {setup['pair']} {setup['direction']} "
-                      f"entry ${self._fmt(setup['entry'])} @ {entry['signal_time']}")
+                      f"entry {self._fmt(setup['entry'])} @ {entry['signal_time']}")
             db.log_signal(setup)
         except Exception as e:
             print(f"  journal error: {e}")
 
     def analyze(self) -> list[dict]:
         results = []
-        combinations = [("15m", "1m"), ("1h", "5m"), ("4h", "15m")]
         for sym in self.pairs:
-            for tf_htf, tf_ltf in combinations:
+            for tf_htf, tf_ltf in self.COMBINATIONS:
                 try:
                     setup = self.analyze_pair(sym, tf_htf, tf_ltf)
                     if setup:

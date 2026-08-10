@@ -20,7 +20,6 @@ Aegis V4 — SMC signal scanner (tidak mengeksekusi order)
   ./aegis.sh bot                Telegram bot (pakai lock sama)
   ./aegis.sh status             Sinyal aktif vs harga sekarang
   ./aegis.sh backtest [days=30] Download → scan → simulate → report
-  ./aegis.sh edge [days=30]     Uji apakah tiap faktor benar-benar punya edge
   ./aegis.sh test               Jalankan seluruh unit test
   ./aegis.sh help               Tampilkan daftar ini
 EOF
@@ -35,7 +34,6 @@ case "${1:-}" in
     poll)      run poll_scanner.py ;;
     bot)       run aegis_bot.py ;;
     status)    run check_status.py ;;
-    edge)      run analysis/backtest/factor_edge.py --days "${2:-30}" ;;
     backtest)
         days="${2:-30}"
         run analysis/backtest/download_history.py --days "$days" || exit 1
