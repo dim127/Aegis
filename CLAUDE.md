@@ -6,8 +6,8 @@
 
 Aegis adalah **pemberi sinyal setup**. Titik.
 
-Ia memindai pasar dengan Smart Money Concepts, menemukan setup, lalu
-**melaporkannya kepada pemiliknya**. Manusia yang memutuskan apakah setup itu
+Ia memindai perpetual **Hyperliquid** dengan Smart Money Concepts murni,
+menemukan setup, lalu **melaporkannya kepada pemiliknya**. Manusia yang memutuskan apakah setup itu
 layak diambil, berapa besar, dan kapan. Aegis tidak pernah memutuskan, dan tidak
 pernah bertindak.
 
@@ -54,20 +54,23 @@ sekaligus — lebih kuat daripada flag `--live` atau kill switch mana pun.
 
 ## Cara bekerja di sini
 
-**Ukur dulu, baru filter.** Setiap faktor baru diekspor sebagai kolom terukur di
-backtest sebelum boleh menggerbang apa pun. Jalankan `./aegis.sh edge` dan
-percayai hasilnya — termasuk saat hasilnya bilang ide Anda tidak berguna. Faktor
-7 (long/short ratio) terlihat menjanjikan sampai diuji dengan benar; ternyata
-noise, dan sekarang nonaktif.
+**JANGAN menambahkan scoring atau threshold.** Ini aturan kedua setelah
+larangan eksekusi, dan alasannya sama tegasnya: skor membuat setup jadi
+plin-plan. Sebuah angka 4/8 tidak berarti apa-apa secara khusus — ia hanya
+mengundang perdebatan apakah 4 cukup. Setup di Aegis **memenuhi struktur atau
+tidak**, dan setiap penolakan menyebut gerbang mana yang gagal.
 
-**Sebut data tebakan sebagai tebakan.** `estimate_liquidation_clusters()` bukan
-data likuidasi asli — Binance tidak menyediakannya tanpa API key. Ia menebak dari
-volume profile. Dokumentasinya harus mengatakan itu, jangan sampai terbaca
-seperti observasi.
+Yang dilarang: hitungan faktor (`min_confluence`), bobot, ambang biaya, toleransi
+kedekatan, skor gabungan. Yang boleh: syarat struktural biner — MSS ada atau
+tidak, FVG segar atau sudah termitigasi, sweep terjadi atau tidak.
 
-**Konteks bukan confluence.** Data pasar yang dilampirkan ke setup (OI, funding,
-volume, order book) adalah **informasi untuk pembaca**, bukan filter. Jangan
-diam-diam mengubahnya jadi gate.
+**Confluence di sini berarti struktural, bukan tally.** HTF *dan* LTF harus
+sama-sama menunjukkan MSS searah. Itu dua pembacaan independen yang sepakat,
+bukan dua poin yang dijumlahkan.
+
+**Level datang dari struktur, bukan angka pilihan.** Entry di FVG midpoint, stop
+di swing terakhir, target di swing berlawanan. **R adalah keluaran** — hasil dari
+jarak antar swing, bukan angka yang ditetapkan lebih dulu.
 
 **Jangan matikan verifikasi SSL.** Error sertifikat pernah muncul di sini karena
 DNS dibajak Internet Positif. `verify=False` bukan perbaikan — itu mengubah

@@ -37,7 +37,6 @@ def make_signal(ts, direction="long", entry=100.0, sl=95.0, tp=115.0, risk=5.0, 
         "tp": tp,
         "risk": risk,
         "rr": rr,
-        "confluence": 5,
     }
 
 
@@ -157,13 +156,10 @@ class ScanDedupTests(unittest.TestCase):
             "tp": 115.0,
             "risk": 5.0,
             "rr": 3.0,
-            "confluence": 4,
             "timestamp": None,
             "fvg_timestamp": index[30],
             "structure_htf": {"direction": "long", "kind": "CHOCH", "index": index[30]},
-            "structure_ltf": None,
-            "reasons": ["a", "b", "c"],
-        }
+            "structure_ltf": None,        }
 
         class FakeStrategy:
             TIMEFRAME_DURATIONS = {"15m": pd.Timedelta(minutes=15), "1m": pd.Timedelta(minutes=1)}

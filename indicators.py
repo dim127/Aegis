@@ -450,6 +450,37 @@ def liquidity_inflection(
     return float(recent["High"].max())
 
 
+def liquidity_target(df: pd.DataFrame, direction: str, entry: float,
+                     window: int = 60) -> float | None:
+    """Nearest opposing swing the move is likely to run at.
+
+    A long targets the closest confirmed swing high above entry, a short the
+    closest swing low below it — the resting liquidity price is drawn toward.
+    Returns None when no such swing exists in the window, leaving the caller to
+    fall back on a fixed multiple.
+
+    This makes reward a property of structure rather than a chosen number: the
+    target is where the liquidity actually sits, and the resulting R follows
+    from it instead of being assumed.
+    """
+    if len(df) < window:
+        window = len(df)
+    if window < 7:
+        return None
+    recent = df.iloc[-window:]
+    highs = recent["High"].to_numpy(float)
+    lows = recent["Low"].to_numpy(float)
+
+    if direction == "long":
+        levels = highs[np.flatnonzero(swing_highs(recent, 3).to_numpy())]
+        above = levels[levels > entry]
+        return float(above.min()) if above.size else None
+
+    levels = lows[np.flatnonzero(swing_lows(recent, 3).to_numpy())]
+    below = levels[levels < entry]
+    return float(below.max()) if below.size else None
+
+
 def volume_spike(df: pd.DataFrame, window: int = 24, multiplier: float = 1.3) -> bool:
     if len(df) < window + 1:
         return False

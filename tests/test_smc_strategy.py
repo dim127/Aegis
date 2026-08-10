@@ -10,7 +10,7 @@ from strategy.aegis_strategy import AegisSMCStrategy
 
 APPROVED_CONFIG = {
     "smc_pairs": ["BTC", "ETH", "BNB", "SOL", "HYPE"],
-    "smc": {"rr_target": 4.0, "atr_proximity": 2.0, "min_confluence": 3},
+    "smc": {"rr_target": 3.0, "sl_atr_buffer": 1.5},
 }
 
 
@@ -117,83 +117,19 @@ class StrategyRuleTests(unittest.TestCase):
         }
 
     def test_exchange_is_saved_when_injected(self):
-        with patch("strategy.aegis_strategy.ccxt.binanceusdm") as mock_cls:
+        with patch("strategy.aegis_strategy.ccxt.hyperliquid") as mock_cls:
             strategy = AegisSMCStrategy(exchange="fake", config=APPROVED_CONFIG)
         mock_cls.assert_not_called()
         self.assertEqual(strategy.exchange, "fake")
 
     def test_exchange_is_created_when_none(self):
-        with patch("strategy.aegis_strategy.ccxt.binanceusdm") as mock_cls:
+        with patch("strategy.aegis_strategy.ccxt.hyperliquid") as mock_cls:
             strategy = AegisSMCStrategy(exchange=None, config=APPROVED_CONFIG)
         mock_cls.assert_called_once()
         self.assertEqual(strategy.exchange, mock_cls.return_value)
 
-    def test_valid_setup_counts_only_the_five_official_factors(self):
-        htf_event = {"direction": "long", "kind": "BOS", "index": self.df_15m.index[-1], "level": 109.0}
-        htf = structure_result(event=htf_event, bullish_bos=True)
-        ltf = structure_result()
-        ob = {"index": self.df_15m.index[-2], "high": 105.0, "low": 100.0, "fully_mitigated": False, "mitigation_ratio": 0.0}
 
-        with (
-            patch("strategy.aegis_strategy.latest_structure_event", return_value=htf),
-            patch("strategy.aegis_strategy.detect_structure", return_value=ltf),
-            patch("strategy.aegis_strategy.fair_value_gaps", return_value={"bullish_fvgs": [self.fvg], "bearish_fvgs": []}),
-            patch("strategy.aegis_strategy.order_block_for_event", return_value=ob),
-            patch("strategy.aegis_strategy.atr", return_value=pd.Series([10.0])),
-            patch("strategy.aegis_strategy.is_fvg_mitigated", return_value=False),
-            patch("strategy.aegis_strategy.is_breakout_candle", return_value=True),
-            patch("strategy.aegis_strategy.liquidity_inflection", return_value=95.0),
-            patch("strategy.aegis_strategy.detect_liquidity_sweep", return_value=True),
-        ):
-            result = self.strategy._check_direction(self.df_15m, self.df_1m, "long")
 
-        self.assertTrue(result["valid"])
-        self.assertEqual(result["confluence"], 5)
-        self.assertEqual(len(result["reasons"]), 5)
-        self.assertEqual(result["rr"], 4.0)
-        self.assertEqual(result["tp"], 192.5)
-        self.assertEqual(result["management_rules"], "Hold until Stop Loss or Take Profit.")
-        self.assertEqual(result["fvg_timestamp"], self.df_1m.index[-1])
-        self.assertEqual(result["ob_timestamp"], self.df_15m.index[-2])
-
-    def test_fresh_fvg_without_structure_shift_is_rejected(self):
-        no_shift = structure_result()
-
-        with (
-            patch("strategy.aegis_strategy.latest_structure_event", return_value=no_shift),
-            patch("strategy.aegis_strategy.detect_structure", return_value=no_shift),
-            patch("strategy.aegis_strategy.fair_value_gaps", return_value={"bullish_fvgs": [self.fvg], "bearish_fvgs": []}),
-            patch("strategy.aegis_strategy.atr", return_value=pd.Series([10.0])),
-            patch("strategy.aegis_strategy.is_fvg_mitigated", return_value=False),
-            patch("strategy.aegis_strategy.is_breakout_candle", return_value=True),
-        ):
-            result = self.strategy._check_direction(self.df_15m, self.df_1m, "long")
-
-        self.assertFalse(result["valid"])
-        self.assertIn("No structure shift", result["reason"])
-
-    def test_fvg_before_structure_event_is_rejected(self):
-        htf_event = {"direction": "long", "kind": "BOS", "index": self.df_15m.index[-1], "level": 109.0}
-        old_fvg = {**self.fvg, "index": self.df_1m.index[-2]}
-
-        with (
-            patch("strategy.aegis_strategy.latest_structure_event", return_value=structure_result(event=htf_event, bullish_bos=True)),
-            patch("strategy.aegis_strategy.detect_structure", return_value=structure_result()),
-            patch("strategy.aegis_strategy.fair_value_gaps", return_value={"bullish_fvgs": [old_fvg], "bearish_fvgs": []}),
-            patch("strategy.aegis_strategy.atr", return_value=pd.Series([10.0])),
-            patch("strategy.aegis_strategy.is_fvg_mitigated", return_value=False),
-            patch("strategy.aegis_strategy.is_breakout_candle", return_value=True),
-        ):
-            result = self.strategy._check_direction(self.df_15m, self.df_1m, "long")
-
-        self.assertFalse(result["valid"])
-        self.assertIn("No valid FVG", result["reason"])
-
-    def test_config_cannot_reduce_minimum_rr(self):
-        invalid_config = {**APPROVED_CONFIG, "smc": {**APPROVED_CONFIG["smc"], "rr_target": 2.0}}
-
-        with self.assertRaisesRegex(ValueError, "rr_target"):
-            AegisSMCStrategy(exchange=object(), config=invalid_config)
 
 
 class ClosedCandleReplayTests(unittest.TestCase):
@@ -227,3 +163,129 @@ class ClosedCandleReplayTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PureDetectionTests(unittest.TestCase):
+    """All five conditions required, nothing scored.
+
+    The gates are checked in order, and each rejection names the one that failed
+    — so a setup that does not appear can always be explained, rather than being
+    the silent result of a score landing under some threshold.
+    """
+
+    def setUp(self):
+        self.strategy = AegisSMCStrategy(exchange=object(), config=APPROVED_CONFIG)
+        self.df_htf = make_frame()
+        self.df_ltf = make_frame()
+        self.fvg = {
+            "index": self.df_ltf.index[-1],
+            "displacement_index": self.df_ltf.index[-2],
+            "direction": "long",
+            "gap_low": 100.0, "gap_high": 105.0, "gap_mid": 102.5,
+        }
+
+    def _run(self, htf_shift=True, ltf_shift=True, fvg=True, sweep=True, swing=95.0):
+        event = {"direction": "long", "kind": "CHOCH",
+                 "index": self.df_htf.index[-1], "level": 109.0}
+        htf = structure_result(event=event if htf_shift else None,
+                               bullish_choch=htf_shift)
+        ltf = structure_result(event=event if ltf_shift else None,
+                               bullish_choch=ltf_shift)
+        with (
+            patch("strategy.aegis_strategy.latest_structure_event", return_value=htf),
+            patch("strategy.aegis_strategy.detect_structure", return_value=ltf),
+            patch("strategy.aegis_strategy.fair_value_gaps",
+                  return_value={"bullish_fvgs": [self.fvg] if fvg else [],
+                                "bearish_fvgs": []}),
+            patch("strategy.aegis_strategy.atr", return_value=pd.Series([1.0])),
+            patch("strategy.aegis_strategy.is_fvg_mitigated", return_value=False),
+            patch("strategy.aegis_strategy.detect_liquidity_sweep", return_value=sweep),
+            patch("strategy.aegis_strategy.liquidity_inflection", return_value=swing),
+            patch("strategy.aegis_strategy.liquidity_target", return_value=None),
+        ):
+            return self.strategy._check_direction(self.df_htf, self.df_ltf, "long")
+
+    def test_all_five_conditions_produce_a_setup(self):
+        r = self._run()
+        self.assertTrue(r["valid"], r.get("reason"))
+        self.assertEqual(r["entry"], 102.5)
+
+    def test_htf_alone_is_not_enough(self):
+        # The confluence requirement: an LTF break without HTF agreement, or
+        # vice versa, is not a setup.
+        r = self._run(ltf_shift=False)
+        self.assertFalse(r["valid"])
+        self.assertIn("No MSS on 1m", r["reason"])
+
+    def test_ltf_alone_is_not_enough(self):
+        r = self._run(htf_shift=False)
+        self.assertFalse(r["valid"])
+        self.assertIn("No MSS on 15m", r["reason"])
+
+    def test_missing_fvg_rejects(self):
+        self.assertIn("FVG", self._run(fvg=False)["reason"])
+
+    def test_missing_sweep_rejects(self):
+        self.assertIn("sweep", self._run(sweep=False)["reason"])
+
+    def test_missing_swing_rejects(self):
+        self.assertIn("swing", self._run(swing=None)["reason"])
+
+    def test_no_score_or_threshold_fields_remain(self):
+        r = self._run()
+        for gone in ("confluence", "soft_hits", "reasons", "rr_net", "context"):
+            self.assertNotIn(gone, r, f"{gone} should no longer exist")
+
+    def test_identical_input_gives_identical_output(self):
+        # Determinism is the property scoring cost us.
+        self.assertEqual(self._run(), self._run())
+
+
+class LiquidityTargetTests(unittest.TestCase):
+    """R follows from where the swings are, rather than being chosen."""
+
+    def setUp(self):
+        self.strategy = AegisSMCStrategy(exchange=object(), config=APPROVED_CONFIG)
+        self.df_htf = make_frame()
+        self.df_ltf = make_frame()
+
+    def _run(self, target):
+        event = {"direction": "long", "kind": "BOS",
+                 "index": self.df_htf.index[-1], "level": 109.0}
+        st = structure_result(event=event, bullish_bos=True)
+        fvg = {"index": self.df_ltf.index[-1], "displacement_index": self.df_ltf.index[-2],
+               "direction": "long", "gap_low": 99.0, "gap_high": 101.0, "gap_mid": 100.0}
+        with (
+            patch("strategy.aegis_strategy.latest_structure_event", return_value=st),
+            patch("strategy.aegis_strategy.detect_structure", return_value=st),
+            patch("strategy.aegis_strategy.fair_value_gaps",
+                  return_value={"bullish_fvgs": [fvg], "bearish_fvgs": []}),
+            patch("strategy.aegis_strategy.atr", return_value=pd.Series([0.0])),
+            patch("strategy.aegis_strategy.is_fvg_mitigated", return_value=False),
+            patch("strategy.aegis_strategy.detect_liquidity_sweep", return_value=True),
+            patch("strategy.aegis_strategy.liquidity_inflection", return_value=90.0),
+            patch("strategy.aegis_strategy.liquidity_target", return_value=target),
+        ):
+            return self.strategy._check_direction(self.df_htf, self.df_ltf, "long")
+
+    def test_rr_is_derived_from_the_swing(self):
+        # entry 100, stop 90 -> risk 10; a swing at 125 is 2.5R, not 3R.
+        r = self._run(125.0)
+        self.assertTrue(r["valid"])
+        self.assertEqual(r["tp"], 125.0)
+        self.assertAlmostEqual(r["rr"], 2.5)
+        self.assertEqual(r["tp_source"], "swing")
+
+    def test_a_distant_swing_gives_a_larger_r(self):
+        r = self._run(160.0)
+        self.assertAlmostEqual(r["rr"], 6.0)
+
+    def test_falls_back_to_the_multiple_without_a_swing(self):
+        r = self._run(None)
+        self.assertEqual(r["tp_source"], "multiple")
+        self.assertAlmostEqual(r["rr"], 3.0)
+
+    def test_a_target_on_the_wrong_side_is_rejected(self):
+        r = self._run(95.0)
+        self.assertFalse(r["valid"])
+        self.assertIn("wrong side", r["reason"])

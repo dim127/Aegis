@@ -58,29 +58,6 @@ def _ensure_db(cache_db: str):  # type: ignore[no-untyped-def]
             status TEXT DEFAULT 'PENDING'
         )
     """)
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS market_metrics (
-            symbol TEXT,
-            metric TEXT,
-            payload TEXT,
-            updated_at REAL,
-            PRIMARY KEY (symbol, metric)
-        )
-    """)
-    # Timestamped positioning history (long/short ratio, open interest). Unlike
-    # market_metrics, which holds one TTL-cached snapshot per symbol, this keeps
-    # the series so a backtest can look up the value as of a past candle.
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS positioning_history (
-            symbol TEXT,
-            metric TEXT,
-            period TEXT,
-            timestamp INTEGER,
-            value REAL,
-            extra TEXT,
-            PRIMARY KEY (symbol, metric, period, timestamp)
-        )
-    """)
     conn.commit()
     # Idempotent migrations: SQLite has no ADD COLUMN IF NOT EXISTS, so each is
     # attempted and the "duplicate column name" error swallowed.
@@ -188,8 +165,7 @@ CREATE TABLE IF NOT EXISTS signals (
     tp REAL,
     risk REAL,
     rr REAL,
-    confluence INTEGER,
-    reasons TEXT,
+    event_kind TEXT,
     created_at TEXT
 )
 """
@@ -213,9 +189,6 @@ def save_signal(signal: dict, dedup_minutes: int = 60) -> bool:
     _, signals_db = _active_paths()
     _ensure_signals_db(signals_db)
     conn = sqlite3.connect(signals_db)
-    reasons = signal.get("reasons", "")
-    if isinstance(reasons, list):
-        reasons = "; ".join(str(r) for r in reasons)
     cutoff = (datetime.utcnow() - timedelta(minutes=dedup_minutes)).isoformat()
     duplicate = conn.execute(
         "SELECT 1 FROM signals WHERE pair = ? AND tf_htf = ? AND tf_ltf = ? "
@@ -228,12 +201,12 @@ def save_signal(signal: dict, dedup_minutes: int = 60) -> bool:
         return False
     conn.execute(
         "INSERT INTO signals (signal_time, pair, tf_htf, tf_ltf, direction, "
-        "entry, sl, tp, risk, rr, confluence, reasons, created_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "entry, sl, tp, risk, rr, event_kind, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (signal.get("signal_time", ""), signal["pair"], signal["tf_htf"],
          signal["tf_ltf"], signal["direction"], signal["entry"], signal["sl"],
-         signal["tp"], signal["risk"], signal["rr"], signal["confluence"],
-         reasons, datetime.utcnow().isoformat()),
+         signal["tp"], signal["risk"], signal["rr"],
+         signal.get("event_kind", ""), datetime.utcnow().isoformat()),
     )
     conn.commit()
     conn.close()
@@ -246,12 +219,12 @@ def fetch_signals(limit: int = 100) -> list[dict]:
     conn = sqlite3.connect(signals_db)
     rows = conn.execute(
         "SELECT signal_time, pair, tf_htf, tf_ltf, direction, entry, sl, tp, "
-        "rr, confluence FROM signals ORDER BY id DESC LIMIT ?",
+        "rr, event_kind FROM signals ORDER BY id DESC LIMIT ?",
         (limit,),
     ).fetchall()
     conn.close()
     columns = ["signal_time", "pair", "tf_htf", "tf_ltf", "direction",
-               "entry", "sl", "tp", "rr", "confluence"]
+               "entry", "sl", "tp", "rr", "event_kind"]
     return [dict(zip(columns, row)) for row in rows]
 
 def expire_stale_signals(ttl_minutes: int = 15) -> int:
@@ -342,86 +315,9 @@ def fetch_trade_journal(status: str = "PENDING") -> list[dict]:
     return [dict(zip(columns, row)) for row in rows]
 
 
-def get_market_metric(symbol: str, metric: str, max_age_minutes: int = 60) -> Optional[dict]:
-    """Read a cached market metric if it is newer than max_age_minutes."""
-    cache_db, _ = _active_paths()
-    _ensure_db(cache_db)
-    conn = sqlite3.connect(cache_db)
-    row = conn.execute(
-        "SELECT payload, updated_at FROM market_metrics WHERE symbol = ? AND metric = ?",
-        (symbol, metric),
-    ).fetchone()
-    conn.close()
-    if not row:
-        return None
-    age_seconds = time.time() - row[1]
-    if age_seconds > max_age_minutes * 60:
-        return None
-    try:
-        return json.loads(row[0])
-    except (TypeError, json.JSONDecodeError):
-        return None
 
 
-def set_market_metric(symbol: str, metric: str, payload: dict):
-    cache_db, _ = _active_paths()
-    _ensure_db(cache_db)
-    conn = sqlite3.connect(cache_db)
-    conn.execute(
-        "INSERT OR REPLACE INTO market_metrics (symbol, metric, payload, updated_at) "
-        "VALUES (?, ?, ?, ?)",
-        (symbol, metric, json.dumps(payload), time.time()),
-    )
-    conn.commit()
-    conn.close()
 
-
-def save_positioning_history(symbol: str, metric: str, period: str, rows: list[dict]) -> int:
-    """Store a positioning series. Rows need `timestamp` (ms) and `value`."""
-    if not rows:
-        return 0
-    cache_db, _ = _active_paths()
-    _ensure_db(cache_db)
-    conn = sqlite3.connect(cache_db)
-    conn.executemany(
-        "INSERT OR REPLACE INTO positioning_history "
-        "(symbol, metric, period, timestamp, value, extra) VALUES (?, ?, ?, ?, ?, ?)",
-        [
-            (symbol, metric, period, int(r["timestamp"]), float(r["value"]),
-             json.dumps(r.get("extra")) if r.get("extra") is not None else None)
-            for r in rows
-        ],
-    )
-    conn.commit()
-    conn.close()
-    return len(rows)
-
-
-def load_positioning_history(symbol: str, metric: str, period: str) -> list[tuple]:
-    """Return [(timestamp_ms, value), ...] ascending, for as-of lookups."""
-    cache_db, _ = _active_paths()
-    _ensure_db(cache_db)
-    conn = sqlite3.connect(cache_db)
-    rows = conn.execute(
-        "SELECT timestamp, value FROM positioning_history "
-        "WHERE symbol = ? AND metric = ? AND period = ? ORDER BY timestamp ASC",
-        (symbol, metric, period),
-    ).fetchall()
-    conn.close()
-    return rows
-
-
-def positioning_coverage(symbol: str, metric: str, period: str) -> dict:
-    cache_db, _ = _active_paths()
-    _ensure_db(cache_db)
-    conn = sqlite3.connect(cache_db)
-    row = conn.execute(
-        "SELECT COUNT(*), MIN(timestamp), MAX(timestamp) FROM positioning_history "
-        "WHERE symbol = ? AND metric = ? AND period = ?",
-        (symbol, metric, period),
-    ).fetchone()
-    conn.close()
-    return {"rows": row[0] or 0, "first": row[1], "last": row[2]}
 
 
 def record_fill(trade_id: int, fill_price: float, fill_time: str | None = None):

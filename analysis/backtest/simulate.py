@@ -28,7 +28,7 @@ FILL_WINDOW = 60
 PATH_CAP = 1440
 TRADE_COLUMNS = [
     "signal_ts", "fill_ts", "exit_ts", "pair", "tf_htf", "tf_ltf", "direction",
-    "entry", "sl", "tp", "risk", "rr_target", "confluence",
+    "entry", "sl", "tp", "risk", "rr_target",
     "filled", "outcome", "r_multiple", "mfe_r", "mae_r",
 ]
 
@@ -45,7 +45,6 @@ class Position:
         self.tp = float(sig["tp"])
         self.risk = float(sig["risk"])
         self.rr_target = float(sig["rr"])
-        self.confluence = int(sig["confluence"])
         self.filled = False
         self.fill_pos = None
         self.fill_ts = None
@@ -172,7 +171,6 @@ class Position:
             "tp": round(self.tp, 8),
             "risk": round(self.risk, 8),
             "rr_target": self.rr_target,
-            "confluence": self.confluence,
             "filled": self.filled,
             "outcome": self.outcome,
             "r_multiple": self.r_multiple,
